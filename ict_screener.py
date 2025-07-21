@@ -40,20 +40,20 @@ def detect_fvg(df):
     return df
 
 def find_equal_lows(df, tolerance=0.01):
-    def is_equal(x):
-        if len(x) < 3:
+    def is_equal(arr):
+        if len(arr) < 3:
             return False
-        return abs(x[0] - x[1]) < tolerance * x[0] and abs(x[1] - x[2]) < tolerance * x[1]
-    lows = df['Low'].rolling(window=3).apply(is_equal, raw=True)
-    return lows.fillna(0).astype(bool)
+        return (abs(arr[0] - arr[1]) < tolerance * arr[0]) and (abs(arr[1] - arr[2]) < tolerance * arr[1])
+    lows_bool = df['Low'].rolling(window=3).apply(is_equal, raw=True)
+    return lows_bool.fillna(0).astype(bool)
 
 def find_equal_highs(df, tolerance=0.01):
-    def is_equal(x):
-        if len(x) < 3:
+    def is_equal(arr):
+        if len(arr) < 3:
             return False
-        return abs(x[0] - x[1]) < tolerance * x[0] and abs(x[1] - x[2]) < tolerance * x[1]
-    highs = df['High'].rolling(window=3).apply(is_equal, raw=True)
-    return highs.fillna(0).astype(bool)
+        return (abs(arr[0] - arr[1]) < tolerance * arr[0]) and (abs(arr[1] - arr[2]) < tolerance * arr[1])
+    highs_bool = df['High'].rolling(window=3).apply(is_equal, raw=True)
+    return highs_bool.fillna(0).astype(bool)
 
 def open_confluence(df):
     def is_confluent(x):
@@ -76,16 +76,11 @@ else:
             st.warning(f"no data for {ticker}")
             continue
 
-        # sanity debug
-        st.write(f"Processing {ticker} - data type: {type(df)}")
-        st.write(f"Columns: {df.columns}")
-
         df = detect_fvg(df)
         df['eq_lows'] = find_equal_lows(df)
         df['eq_highs'] = find_equal_highs(df)
         df['open_confluence'] = open_confluence(df)
 
-        # verify columns added correctly
         missing_cols = [c for c in ['eq_lows', 'eq_highs', 'open_confluence'] if c not in df.columns]
         if missing_cols:
             st.error(f"missing columns {missing_cols} for {ticker}, skipping")
@@ -109,7 +104,10 @@ else:
 
                 try:
                     eq_lows_mask = df['eq_lows'].astype(bool)
-                    eq_lows_levels = df.loc[eq_lows_mask, 'Low'].unique()
+                    eq_lows_levels = df.loc[eq_lows_mask, 'Low']
+                    if isinstance(eq_lows_levels, pd.DataFrame):
+                        eq_lows_levels = eq_lows_levels.iloc[:, 0]
+                    eq_lows_levels = eq_lows_levels.unique()
                     for level in eq_lows_levels:
                         fig.add_hline(y=level, line=dict(color='blue', dash='dash'), annotation_text='Equal Low', annotation_position='bottom left')
                 except Exception as e:
@@ -117,7 +115,10 @@ else:
 
                 try:
                     eq_highs_mask = df['eq_highs'].astype(bool)
-                    eq_highs_levels = df.loc[eq_highs_mask, 'High'].unique()
+                    eq_highs_levels = df.loc[eq_highs_mask, 'High']
+                    if isinstance(eq_highs_levels, pd.DataFrame):
+                        eq_highs_levels = eq_highs_levels.iloc[:, 0]
+                    eq_highs_levels = eq_highs_levels.unique()
                     for level in eq_highs_levels:
                         fig.add_hline(y=level, line=dict(color='red', dash='dash'), annotation_text='Equal High', annotation_position='top left')
                 except Exception as e:
