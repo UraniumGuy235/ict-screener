@@ -30,7 +30,8 @@ def fetch_data(ticker, start, end, interval):
         data = yf.download(ticker, start=start, end=end, interval=interval, progress=False)
         data.dropna(inplace=True)
         return data
-    except:
+    except Exception as e:
+        st.error(f"Error fetching data for {ticker}: {e}")
         return None
 
 def detect_fvg(df):
@@ -40,19 +41,26 @@ def detect_fvg(df):
 
 def find_equal_lows(df, tolerance=0.01):
     def is_equal(x):
-        return abs(x[0]-x[1]) < tolerance * x[0] and abs(x[1]-x[2]) < tolerance * x[1]
+        if len(x) < 3:
+            return False
+        return abs(x[0] - x[1]) < tolerance * x[0] and abs(x[1] - x[2]) < tolerance * x[1]
     lows = df['Low'].rolling(window=3).apply(is_equal, raw=True)
     return lows.fillna(0).astype(bool)
 
 def find_equal_highs(df, tolerance=0.01):
     def is_equal(x):
-        return abs(x[0]-x[1]) < tolerance * x[0] and abs(x[1]-x[2]) < tolerance * x[1]
+        if len(x) < 3:
+            return False
+        return abs(x[0] - x[1]) < tolerance * x[0] and abs(x[1] - x[2]) < tolerance * x[1]
     highs = df['High'].rolling(window=3).apply(is_equal, raw=True)
     return highs.fillna(0).astype(bool)
 
 def open_confluence(df):
-    # use percent diff to be scale agnostic
-    return df['Open'].rolling(3).apply(lambda x: abs(x[0] - x.mean()) / x.mean() < 0.01).fillna(0).astype(bool)
+    def is_confluent(x):
+        if len(x) < 3:
+            return False
+        return abs(x[0] - x.mean()) / x.mean() < 0.01
+    return df['Open'].rolling(3).apply(is_confluent).fillna(0).astype(bool)
 
 st.subheader("Scan Results")
 
@@ -65,13 +73,19 @@ else:
     for idx, ticker in enumerate(tickers):
         df = fetch_data(ticker, start=start_date, end=end_date, interval=interval)
         if df is None or df.empty:
+            st.warning(f"no data for {ticker}")
             continue
+
         df = detect_fvg(df)
         df['eq_lows'] = find_equal_lows(df)
         df['eq_highs'] = find_equal_highs(df)
         df['open_confluence'] = open_confluence(df)
 
-        # setup triggers if any indicator fires
+        # quick sanity check on columns
+        if not all(col in df.columns for col in ['eq_lows', 'eq_highs', 'open_confluence']):
+            st.error(f"missing indicator columns in {ticker} data")
+            continue
+
         df['setup'] = df['bullish_fvg'] | df['eq_lows'] | df['eq_highs'] | df['open_confluence']
 
         if df['setup'].any():
@@ -80,44 +94,49 @@ else:
                 st.markdown(f"### {ticker}")
                 fig = go.Figure()
 
-                # candlesticks
-                fig.add_trace(go.Candlestick(x=df.index,
-                                             open=df['Open'],
-                                             high=df['High'],
-                                             low=df['Low'],
-                                             close=df['Close'],
-                                             name='Price'))
+                fig.add_trace(go.Candlestick(
+                    x=df.index,
+                    open=df['Open'],
+                    high=df['High'],
+                    low=df['Low'],
+                    close=df['Close'],
+                    name='Price'))
 
                 # horizontal lines for equal lows
-                eq_lows_levels = df.loc[df['eq_lows'].astype(bool), 'Low'].unique()
+                eq_lows_mask = df['eq_lows'].astype(bool)
+                eq_lows_levels = df.loc[eq_lows_mask, 'Low'].unique()
                 for level in eq_lows_levels:
                     fig.add_hline(y=level, line=dict(color='blue', dash='dash'), annotation_text='Equal Low', annotation_position='bottom left')
 
                 # horizontal lines for equal highs
-                eq_highs_levels = df.loc[df['eq_highs'].astype(bool), 'High'].unique()
+                eq_highs_mask = df['eq_highs'].astype(bool)
+                eq_highs_levels = df.loc[eq_highs_mask, 'High'].unique()
                 for level in eq_highs_levels:
                     fig.add_hline(y=level, line=dict(color='red', dash='dash'), annotation_text='Equal High', annotation_position='top left')
 
                 # markers for bullish FVG
                 bullish_fvg_points = df[df['bullish_fvg']]
-                fig.add_trace(go.Scatter(x=bullish_fvg_points.index,
-                                         y=bullish_fvg_points['Low'] * 0.995,
-                                         mode='markers',
-                                         marker=dict(color='green', size=10, symbol='triangle-up'),
-                                         name='Bullish FVG'))
+                fig.add_trace(go.Scatter(
+                    x=bullish_fvg_points.index,
+                    y=bullish_fvg_points['Low'] * 0.995,
+                    mode='markers',
+                    marker=dict(color='green', size=10, symbol='triangle-up'),
+                    name='Bullish FVG'))
 
                 # markers for open confluence
                 open_conf_points = df[df['open_confluence']]
-                fig.add_trace(go.Scatter(x=open_conf_points.index,
-                                         y=open_conf_points['Open'],
-                                         mode='markers',
-                                         marker=dict(color='purple', size=10, symbol='circle'),
-                                         name='Open Confluence'))
+                fig.add_trace(go.Scatter(
+                    x=open_conf_points.index,
+                    y=open_conf_points['Open'],
+                    mode='markers',
+                    marker=dict(color='purple', size=10, symbol='circle'),
+                    name='Open Confluence'))
 
-                fig.update_layout(height=600,
-                                  title=f"{ticker} Price Chart with Indicators",
-                                  xaxis_title="Date",
-                                  yaxis_title="Price")
+                fig.update_layout(
+                    height=600,
+                    title=f"{ticker} Price Chart with Indicators",
+                    xaxis_title="Date",
+                    yaxis_title="Price")
 
                 st.plotly_chart(fig, use_container_width=True)
 
