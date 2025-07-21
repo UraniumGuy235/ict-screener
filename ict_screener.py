@@ -38,7 +38,7 @@ def detect_fvg(df):
     df['bullish_fvg'] = (df['Low'].shift(1) > df['High'].shift(2))
     return df
 
-def find_equal_lows(df, tolerance=0.001):
+def find_equal_lows(df, tolerance=0.1):
     lows = df['Low'].rolling(window=3).apply(lambda x: abs(x[0]-x[1]) < tolerance and abs(x[1]-x[2]) < tolerance)
     return lows.fillna(0).astype(bool)
 
@@ -63,7 +63,7 @@ for idx, ticker in enumerate(tickers):
     df['eq_highs'] = find_equal_highs(df)
     df['open_confluence'] = open_confluence(df)
 
-    df['setup'] = df['bullish_fvg'] & (df['eq_lows'] | df['eq_highs']) & df['open_confluence']
+    df['setup'] = df['bullish_fvg'] | (df['eq_lows'] | df['eq_highs']) | df['open_confluence']
 
     if df['setup'].any():
         found_setups = True
