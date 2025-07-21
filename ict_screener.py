@@ -76,14 +76,19 @@ else:
             st.warning(f"no data for {ticker}")
             continue
 
+        # sanity debug
+        st.write(f"Processing {ticker} - data type: {type(df)}")
+        st.write(f"Columns: {df.columns}")
+
         df = detect_fvg(df)
         df['eq_lows'] = find_equal_lows(df)
         df['eq_highs'] = find_equal_highs(df)
         df['open_confluence'] = open_confluence(df)
 
-        # quick sanity check on columns
-        if not all(col in df.columns for col in ['eq_lows', 'eq_highs', 'open_confluence']):
-            st.error(f"missing indicator columns in {ticker} data")
+        # verify columns added correctly
+        missing_cols = [c for c in ['eq_lows', 'eq_highs', 'open_confluence'] if c not in df.columns]
+        if missing_cols:
+            st.error(f"missing columns {missing_cols} for {ticker}, skipping")
             continue
 
         df['setup'] = df['bullish_fvg'] | df['eq_lows'] | df['eq_highs'] | df['open_confluence']
@@ -102,19 +107,22 @@ else:
                     close=df['Close'],
                     name='Price'))
 
-                # horizontal lines for equal lows
-                eq_lows_mask = df['eq_lows'].astype(bool)
-                eq_lows_levels = df.loc[eq_lows_mask, 'Low'].unique()
-                for level in eq_lows_levels:
-                    fig.add_hline(y=level, line=dict(color='blue', dash='dash'), annotation_text='Equal Low', annotation_position='bottom left')
+                try:
+                    eq_lows_mask = df['eq_lows'].astype(bool)
+                    eq_lows_levels = df.loc[eq_lows_mask, 'Low'].unique()
+                    for level in eq_lows_levels:
+                        fig.add_hline(y=level, line=dict(color='blue', dash='dash'), annotation_text='Equal Low', annotation_position='bottom left')
+                except Exception as e:
+                    st.error(f"Error plotting equal lows for {ticker}: {e}")
 
-                # horizontal lines for equal highs
-                eq_highs_mask = df['eq_highs'].astype(bool)
-                eq_highs_levels = df.loc[eq_highs_mask, 'High'].unique()
-                for level in eq_highs_levels:
-                    fig.add_hline(y=level, line=dict(color='red', dash='dash'), annotation_text='Equal High', annotation_position='top left')
+                try:
+                    eq_highs_mask = df['eq_highs'].astype(bool)
+                    eq_highs_levels = df.loc[eq_highs_mask, 'High'].unique()
+                    for level in eq_highs_levels:
+                        fig.add_hline(y=level, line=dict(color='red', dash='dash'), annotation_text='Equal High', annotation_position='top left')
+                except Exception as e:
+                    st.error(f"Error plotting equal highs for {ticker}: {e}")
 
-                # markers for bullish FVG
                 bullish_fvg_points = df[df['bullish_fvg']]
                 fig.add_trace(go.Scatter(
                     x=bullish_fvg_points.index,
@@ -123,7 +131,6 @@ else:
                     marker=dict(color='green', size=10, symbol='triangle-up'),
                     name='Bullish FVG'))
 
-                # markers for open confluence
                 open_conf_points = df[df['open_confluence']]
                 fig.add_trace(go.Scatter(
                     x=open_conf_points.index,
