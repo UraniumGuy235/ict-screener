@@ -1,4 +1,3 @@
-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -40,12 +39,15 @@ def detect_fvg(df):
     return df
 
 def find_equal_lows(df, tolerance=0.01):
-    # tolerance loosened to 1%
-    lows = df['Low'].rolling(window=3).apply(lambda x: abs(x[0]-x[1]) < tolerance * x[0] and abs(x[1]-x[2]) < tolerance * x[1])
+    def is_equal(x):
+        return abs(x[0]-x[1]) < tolerance * x[0] and abs(x[1]-x[2]) < tolerance * x[1]
+    lows = df['Low'].rolling(window=3).apply(is_equal, raw=True)
     return lows.fillna(0).astype(bool)
 
 def find_equal_highs(df, tolerance=0.01):
-    highs = df['High'].rolling(window=3).apply(lambda x: abs(x[0]-x[1]) < tolerance * x[0] and abs(x[1]-x[2]) < tolerance * x[1])
+    def is_equal(x):
+        return abs(x[0]-x[1]) < tolerance * x[0] and abs(x[1]-x[2]) < tolerance * x[1]
+    highs = df['High'].rolling(window=3).apply(is_equal, raw=True)
     return highs.fillna(0).astype(bool)
 
 def open_confluence(df):
@@ -87,12 +89,12 @@ else:
                                              name='Price'))
 
                 # horizontal lines for equal lows
-                eq_lows_levels = df.loc[df['eq_lows'], 'Low'].unique()
+                eq_lows_levels = df.loc[df['eq_lows'].astype(bool), 'Low'].unique()
                 for level in eq_lows_levels:
                     fig.add_hline(y=level, line=dict(color='blue', dash='dash'), annotation_text='Equal Low', annotation_position='bottom left')
 
                 # horizontal lines for equal highs
-                eq_highs_levels = df.loc[df['eq_highs'], 'High'].unique()
+                eq_highs_levels = df.loc[df['eq_highs'].astype(bool), 'High'].unique()
                 for level in eq_highs_levels:
                     fig.add_hline(y=level, line=dict(color='red', dash='dash'), annotation_text='Equal High', annotation_position='top left')
 
@@ -121,4 +123,3 @@ else:
 
     if not found_setups:
         st.info("no setups found today. try adjusting timeframe or start date.")
-
