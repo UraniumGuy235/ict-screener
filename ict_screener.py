@@ -2,11 +2,11 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import plotly.express as px
+import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide")
-st.title("ICT Stock Screener Dashboard (Plotly Express)")
+st.title("ICT Stock Screener Dashboard")
 
 TIMEFRAMES = {
     "1D": "1d",
@@ -95,14 +95,17 @@ else:
 
                 df = df.reset_index()
                 df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
-
-                # force float dtype for OHLC columns
                 for col in ['Open', 'High', 'Low', 'Close']:
                     df[col] = df[col].astype(float)
 
-                # plotly express candlestick chart
-                fig = px.candlestick(df, x='Date', open='Open', high='High', low='Low', close='Close',
-                                     title=f"{ticker} Price Chart with Indicators", height=600)
+                fig = go.Figure()
+                fig.add_trace(go.Candlestick(
+                    x=df['Date'],
+                    open=df['Open'],
+                    high=df['High'],
+                    low=df['Low'],
+                    close=df['Close'],
+                    name='Price'))
 
                 try:
                     eq_lows_mask = df['eq_lows'].astype(bool)
@@ -111,7 +114,7 @@ else:
                         eq_lows_levels = eq_lows_levels.iloc[:, 0]
                     eq_lows_levels = eq_lows_levels.unique()
                     for level in eq_lows_levels:
-                        fig.add_hline(y=level, line_dash='dash', line_color='blue',
+                        fig.add_hline(y=level, line=dict(color='blue', dash='dash'),
                                       annotation_text='Equal Low', annotation_position='bottom left')
                 except Exception as e:
                     st.error(f"Error plotting equal lows for {ticker}: {e}")
@@ -123,20 +126,32 @@ else:
                         eq_highs_levels = eq_highs_levels.iloc[:, 0]
                     eq_highs_levels = eq_highs_levels.unique()
                     for level in eq_highs_levels:
-                        fig.add_hline(y=level, line_dash='dash', line_color='red',
+                        fig.add_hline(y=level, line=dict(color='red', dash='dash'),
                                       annotation_text='Equal High', annotation_position='top left')
                 except Exception as e:
                     st.error(f"Error plotting equal highs for {ticker}: {e}")
 
                 bullish_fvg_points = df[df['bullish_fvg']]
-                fig.add_scatter(x=bullish_fvg_points['Date'], y=bullish_fvg_points['Low'] * 0.995,
-                                mode='markers', marker=dict(color='green', size=10, symbol='triangle-up'),
-                                name='Bullish FVG')
+                fig.add_trace(go.Scatter(
+                    x=bullish_fvg_points['Date'],
+                    y=bullish_fvg_points['Low'] * 0.995,
+                    mode='markers',
+                    marker=dict(color='green', size=10, symbol='triangle-up'),
+                    name='Bullish FVG'))
 
                 open_conf_points = df[df['open_confluence']]
-                fig.add_scatter(x=open_conf_points['Date'], y=open_conf_points['Open'],
-                                mode='markers', marker=dict(color='purple', size=10, symbol='circle'),
-                                name='Open Confluence')
+                fig.add_trace(go.Scatter(
+                    x=open_conf_points['Date'],
+                    y=open_conf_points['Open'],
+                    mode='markers',
+                    marker=dict(color='purple', size=10, symbol='circle'),
+                    name='Open Confluence'))
+
+                fig.update_layout(
+                    height=600,
+                    title=f"{ticker} Price Chart with Indicators",
+                    xaxis_title="Date",
+                    yaxis_title="Price")
 
                 st.plotly_chart(fig, use_container_width=True)
 
