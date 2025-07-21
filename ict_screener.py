@@ -93,8 +93,9 @@ else:
             with cols[idx % len(cols)]:
                 st.markdown(f"### {ticker}")
 
-                # reset index to get 'Date' column for plotly
+                # reset index and remove timezone for plotly compatibility
                 df = df.reset_index()
+                df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
 
                 fig = go.Figure()
 
