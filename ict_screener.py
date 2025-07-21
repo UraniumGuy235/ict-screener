@@ -121,5 +121,4 @@ else:
 
     if not found_setups:
         st.info("no setups found today. try adjusting timeframe or start date.")
-```
 
