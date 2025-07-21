@@ -92,10 +92,14 @@ else:
             found_setups = True
             with cols[idx % len(cols)]:
                 st.markdown(f"### {ticker}")
+
+                # reset index to get 'Date' column for plotly
+                df = df.reset_index()
+
                 fig = go.Figure()
 
                 fig.add_trace(go.Candlestick(
-                    x=df.index,
+                    x=df['Date'],
                     open=df['Open'],
                     high=df['High'],
                     low=df['Low'],
@@ -126,7 +130,7 @@ else:
 
                 bullish_fvg_points = df[df['bullish_fvg']]
                 fig.add_trace(go.Scatter(
-                    x=bullish_fvg_points.index,
+                    x=bullish_fvg_points['Date'],
                     y=bullish_fvg_points['Low'] * 0.995,
                     mode='markers',
                     marker=dict(color='green', size=10, symbol='triangle-up'),
@@ -134,7 +138,7 @@ else:
 
                 open_conf_points = df[df['open_confluence']]
                 fig.add_trace(go.Scatter(
-                    x=open_conf_points.index,
+                    x=open_conf_points['Date'],
                     y=open_conf_points['Open'],
                     mode='markers',
                     marker=dict(color='purple', size=10, symbol='circle'),
