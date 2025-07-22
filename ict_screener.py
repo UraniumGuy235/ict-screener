@@ -129,3 +129,15 @@ for idx, ticker in enumerate(tickers):
 
     fig.update_layout(
         title=f"{ticker} price with ICT equal highs/lows",
+        xaxis_title="Date",
+        yaxis_title="Price",
+        template="plotly_dark",
+        xaxis_rangeslider_visible=False
+    )
+
+    with cols[idx % len(cols)]:
+        st.plotly_chart(fig, use_container_width=True)
+        found_setups = True
+
+if not found_setups:
+    st.info("no setups found in selected tickers/timeframe. try adjusting date range or tickers.")
