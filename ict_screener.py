@@ -4,13 +4,13 @@ import pandas as pd
 import plotly.graph_objects as go
 
 st.set_page_config(layout="wide")
-st.title("ict bullish stock screener + single ticker viewer")
+st.title("ict bullish stock screener + single ticker viewer (with indicator placeholders)")
 
 TIMEFRAMES = {
     "1M": ("1mo", 3),
     "1W": ("1wk", 2),
     "1D": ("1d", 1),
-    "1H": ("60m", 0.5),  # lower priority
+    "1H": ("60m", 0.5),
 }
 
 def fetch_data(ticker, interval):
@@ -47,7 +47,6 @@ def find_equal_levels(df, price_col='Low', tol=0.02):
                     break
                 if price_col == 'High' and test_price < base_price * (1 - tol):
                     break
-    # unique pairs only
     unique_levels = []
     seen = set()
     for s, e, lvl in levels:
@@ -69,28 +68,18 @@ def plot_candles_with_equals(df, equals_highs=None, equals_lows=None, title=""):
         name='price'
     )])
 
-    # plot equals highs
     if equals_highs:
         for s, e, lvl in equals_highs:
-            fig.add_shape(
-                type='line',
-                x0=s, x1=e,
-                y0=lvl, y1=lvl,
-                xref='x', yref='y',
-                line=dict(color='orange', width=3, dash='solid'),
-                name='equals high'
-            )
-    # plot equals lows
+            fig.add_shape(type='line', x0=s, x1=e, y0=lvl, y1=lvl,
+                          xref='x', yref='y', line=dict(color='orange', width=3))
     if equals_lows:
         for s, e, lvl in equals_lows:
-            fig.add_shape(
-                type='line',
-                x0=s, x1=e,
-                y0=lvl, y1=lvl,
-                xref='x', yref='y',
-                line=dict(color='cyan', width=3, dash='solid'),
-                name='equals low'
-            )
+            fig.add_shape(type='line', x0=s, x1=e, y0=lvl, y1=lvl,
+                          xref='x', yref='y', line=dict(color='cyan', width=3))
+
+    # placeholder to mark where FVG detection/overlay would happen
+    # TODO: integrate ICT FVG logic from PineScript in Python equivalent
+
     fig.update_layout(
         title=title,
         template="plotly_dark",
@@ -150,6 +139,7 @@ if mode == "screener":
                 equals_highs=stock['setup'],
                 title=f"{stock['ticker']} bullish equals above price ({stock['tf']} timeframe)"
             )
+
 elif mode == "single ticker":
     ticker = st.text_input("enter ticker symbol", "AAPL").upper()
     tf_selected = st.multiselect("select timeframe(s)", options=list(TIMEFRAMES.keys()), default=["1D", "1W"])
