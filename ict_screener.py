@@ -2,26 +2,27 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
-import numpy as np
 import random
 
 st.set_page_config(layout="wide")
-st.title("ict bullish stock screener + single ticker viewer")
+st.title("automatic ict 6M FVG screener (auto stops on hit)")
 
 TIMEFRAMES = {
     "6M": ("1mo", 3),
-    "1W": ("1wk", 2),
-    "1D": ("1d", 1),
-    "1H": ("60m", 0.5),
 }
 
-# example universe (replace with larger universe or user input as needed)
+# bigger universe (100 tickers, mostly US large caps + some tech + energy + financials)
 UNIVERSE = [
-    "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "META", "NVDA", "BRK-B",
-    "JPM", "JNJ", "V", "PG", "DIS", "NFLX", "ADBE", "PYPL", "CSCO",
-    "INTC", "CMCSA", "PEP", "KO", "XOM", "BA", "CRM", "ABT", "NKE",
-    "WMT", "T", "CVX", "MCD", "COST", "ACN", "IBM", "TXN", "QCOM",
-    "ORCL", "MDT", "AMGN", "HON", "UPS", "UNH", "LOW", "CAT", "AXP"
+    "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "META", "NVDA", "BRK-B", "JPM", "JNJ",
+    "V", "PG", "DIS", "NFLX", "ADBE", "PYPL", "CSCO", "INTC", "CMCSA", "PEP",
+    "KO", "XOM", "BA", "CRM", "ABT", "NKE", "WMT", "T", "CVX", "MCD",
+    "COST", "ACN", "IBM", "TXN", "QCOM", "ORCL", "MDT", "AMGN", "HON", "UPS",
+    "UNH", "LOW", "CAT", "AXP", "SBUX", "MMM", "GS", "GE", "F", "MO",
+    "BLK", "DE", "LMT", "GM", "ZTS", "NOW", "ADI", "SYK", "MDLZ", "PLD",
+    "SPGI", "CCI", "CHTR", "FIS", "BKNG", "BDX", "DUK", "C", "ADP", "CSX",
+    "SO", "MS", "ETN", "TGT", "VRTX", "CB", "SHW", "USB", "CL", "EMR",
+    "ISRG", "DHR", "AON", "EW", "ITW", "REGN", "PNC", "NSC", "EW", "MNST",
+    "APD", "MCO", "ICE", "MET", "BSX", "ECL", "SNPS", "DXCM", "HCA", "PGR"
 ]
 
 def fetch_data(ticker, interval):
@@ -104,72 +105,33 @@ def plot_candles_with_fvg(df, fvg_list=None, title=""):
     )
     st.plotly_chart(fig, use_container_width=True)
 
-mode = st.radio("select mode", ("screener", "single ticker"))
+# session state for iteration index and results
+if 'scan_index' not in st.session_state:
+    st.session_state.scan_index = 0
+if 'hits' not in st.session_state:
+    st.session_state.hits = []
 
-if mode == "screener":
-    batch_size = 10
-    found_stocks = []
+batch_size = 10
+interval, _ = TIMEFRAMES["6M"]
 
-    tickers_input = st.text_input("enter tickers to screen (comma separated, leave blank to use universe)", "")
-    if tickers_input.strip():
-        universe = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
-    else:
-        universe = UNIVERSE.copy()
+while st.session_state.scan_index < len(UNIVERSE) and not st.session_state.hits:
+    batch = UNIVERSE[st.session_state.scan_index:st.session_state.scan_index + batch_size]
+    st.session_state.scan_index += batch_size
+    for ticker in batch:
+        df = fetch_data(ticker, interval)
+        if df is None or df.empty:
+            continue
+        last_close = df['Close'].iloc[-1]
+        fvg_list = find_fvg(df)
+        fvg_below = [fvg for fvg in fvg_list if price_in_fvg(last_close, fvg) and fvg[3] < last_close]
+        if fvg_below:
+            st.session_state.hits.append({'ticker': ticker, 'df': df, 'fvg': fvg_below})
+            break  # stop on first hit in batch
 
-    # session state for pagination
-    if 'index' not in st.session_state:
-        st.session_state.index = 0
-    if 'found_stocks' not in st.session_state:
-        st.session_state.found_stocks = []
+if st.session_state.hits:
+    st.subheader("Found stocks with price inside 6M FVG below current price")
+    for stock in st.session_state.hits:
+        plot_candles_with_fvg(stock['df'], fvg_list=stock['fvg'], title=f"{stock['ticker']} - 6M FVG")
+else:
+    st.info("No stocks found with price inside 6M FVG below current price yet. Scanning...")
 
-    def screen_batch():
-        idx = st.session_state.index
-        batch = universe[idx:idx+batch_size]
-        new_found = []
-        interval, _ = TIMEFRAMES["6M"]
-        for ticker in batch:
-            df = fetch_data(ticker, interval)
-            if df is None or df.empty:
-                continue
-            last_close = df['Close'].iloc[-1]
-            fvg_list = find_fvg(df)
-            fvg_below = [fvg for fvg in fvg_list if price_in_fvg(last_close, fvg) and fvg[3] < last_close]
-            if fvg_below:
-                new_found.append({'ticker': ticker, 'df': df, 'fvg': fvg_below})
-        st.session_state.found_stocks.extend(new_found)
-        st.session_state.index += batch_size
-
-    if st.button("search next batch"):
-        screen_batch()
-
-    # initial search if nothing found yet
-    if not st.session_state.found_stocks and st.session_state.index == 0:
-        screen_batch()
-
-    found_stocks = st.session_state.found_stocks
-
-    st.subheader("stocks with price inside 6M FVG below current price")
-    if not found_stocks:
-        st.info("no stocks found yet, press 'search next batch' to scan more")
-    else:
-        cols = st.columns(min(3, len(found_stocks)))
-        for i, stock in enumerate(found_stocks[:3]):
-            plot_candles_with_fvg(
-                stock['df'],
-                fvg_list=stock['fvg'],
-                title=f"{stock['ticker']} price inside 6M FVG (6M timeframe)"
-            )
-
-elif mode == "single ticker":
-    ticker = st.text_input("enter ticker symbol", "AAPL").upper()
-    tf_selected = st.multiselect("select timeframe(s)", options=list(TIMEFRAMES.keys()), default=["1D", "1W"])
-
-    if ticker and tf_selected:
-        for tf_label in tf_selected:
-            interval, _ = TIMEFRAMES[tf_label]
-            df = fetch_data(ticker, interval)
-            if df is None or df.empty:
-                st.warning(f"no data for {ticker} on {tf_label}")
-                continue
-            fvg_list = find_fvg(df)
-            plot_candles_with_fvg(df, fvg_list=fvg_list, title=f"{ticker} {tf_label} chart with FVG")
