@@ -3,7 +3,7 @@ import yfinance as yf
 
 st.title("yfinance data debug")
 
-ticker = st.text_input("Enter ticker symbol:", "AAPL")
+ticker = st.text_input("Enter ticker symbol:", "EOSE")
 
 if st.button("Fetch Data"):
     df = yf.download(ticker, period="6mo", interval="1d")
