@@ -72,17 +72,33 @@ if st.button("Fetch and Plot"):
                       y0=y0, y1=y1,
                       fillcolor="rgba(0,255,0,0.2)", line_width=0)
 
-    # equal lows horizontal lines
-    eq_lows_vals = df.loc[df['eq_lows'], 'Low'].unique()
-    for lvl in eq_lows_vals:
-        fig.add_hline(y=lvl, line=dict(color='lime', width=1, dash='dash'),
-                      annotation_text='Equal Lows', annotation_position="bottom left")
+    # equal lows lines connecting the two lows forming the pattern
+    eq_lows_idx = df.index[df['eq_lows']]
+    for idx in eq_lows_idx:
+        pos = df.index.get_loc(idx)
+        if pos >= 2:
+            x0 = df.index[pos-2]
+            x1 = df.index[pos-1]
+            y0 = df.loc[x0, 'Low']
+            y1 = df.loc[x1, 'Low']
+            fig.add_shape(type="line",
+                          x0=x0, x1=x1,
+                          y0=y0, y1=y1,
+                          line=dict(color='lime', width=2))
 
-    # equal highs horizontal lines
-    eq_highs_vals = df.loc[df['eq_highs'], 'High'].unique()
-    for lvl in eq_highs_vals:
-        fig.add_hline(y=lvl, line=dict(color='orange', width=1, dash='dash'),
-                      annotation_text='Equal Highs', annotation_position="top left")
+    # equal highs lines connecting the two highs forming the pattern
+    eq_highs_idx = df.index[df['eq_highs']]
+    for idx in eq_highs_idx:
+        pos = df.index.get_loc(idx)
+        if pos >= 2:
+            x0 = df.index[pos-2]
+            x1 = df.index[pos-1]
+            y0 = df.loc[x0, 'High']
+            y1 = df.loc[x1, 'High']
+            fig.add_shape(type="line",
+                          x0=x0, x1=x1,
+                          y0=y0, y1=y1,
+                          line=dict(color='orange', width=2))
 
     # open confluence blue markers
     confluence_idx = df.index[df['open_confluence']]
