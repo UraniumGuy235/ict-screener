@@ -161,6 +161,6 @@ elif mode == "single ticker":
             if df is None or df.empty:
                 st.warning(f"no data for {ticker} on {tf_label}")
                 continue
-            highs_eq = find_equal_levels(df, 'High', tol=0.02)
-            lows_eq = find_equal_levels(df, 'Low', tol=0.02)
+            highs_eq = find_equal_levels(df, 'High', tol=0.005)
+            lows_eq = find_equal_levels(df, 'Low', tol=0.005)
             plot_candles_with_equals(df, equals_highs=highs_eq, equals_lows=lows_eq, title=f"{ticker} {tf_label} chart with equals")
