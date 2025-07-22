@@ -1,156 +1,93 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
+import yfinance as yf
 import plotly.graph_objects as go
+import datetime
+from streamlit.components.v1 import html
 
 st.set_page_config(layout="wide")
-st.title("ict bullish stock screener + single ticker viewer (with indicator placeholders)")
 
-TIMEFRAMES = {
-    "1M": ("1mo", 3),
-    "1W": ("1wk", 2),
-    "1D": ("1d", 1),
-    "1H": ("60m", 0.5),
-}
+# === indicator logic ===
+def find_equals(df, tolerance=0.015):
+    highs = df['High']
+    lows = df['Low']
+    equals = []
+    for i in range(len(df)):
+        for j in range(i+1, len(df)):
+            hi1, hi2 = highs.iloc[i], highs.iloc[j]
+            lo1, lo2 = lows.iloc[i], lows.iloc[j]
+            max_high = highs.iloc[i+1:j].max() if j > i+1 else 0
+            min_low = lows.iloc[i+1:j].min() if j > i+1 else float('inf')
 
-def fetch_data(ticker, interval):
-    try:
-        df = yf.download(ticker, period="1y", interval=interval, progress=False)
-        if df.empty:
-            return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.droplevel(1)
-        df = df[['Open', 'High', 'Low', 'Close', 'Volume']].astype(float)
-        df.reset_index(inplace=True)
-        return df
-    except Exception:
-        return None
+            if abs(hi1 - hi2) <= tolerance and max_high < min(hi1, hi2):
+                equals.append(('high', df.index[i], df.index[j], min(hi1, hi2)))
+            elif abs(lo1 - lo2) <= tolerance and min_low > max(lo1, lo2):
+                equals.append(('low', df.index[i], df.index[j], max(lo1, lo2)))
+    return equals
 
-def find_equal_levels(df, price_col='Low', tol=0.02):
-    levels = []
-    n = len(df)
-    for i in range(n):
-        base_price = df.loc[i, price_col]
-        for j in range(i+1, n):
-            test_price = df.loc[j, price_col]
-            if abs(test_price - base_price) / base_price <= tol:
-                inter_slice = df.loc[i+1:j-1] if j - i > 1 else pd.DataFrame()
-                if price_col == 'Low':
-                    if not inter_slice.empty and (inter_slice['Low'] < min(base_price, test_price)).any():
-                        continue
-                else:
-                    if not inter_slice.empty and (inter_slice['High'] > max(base_price, test_price)).any():
-                        continue
-                levels.append((i, j, (base_price + test_price)/2))
-            else:
-                if price_col == 'Low' and test_price > base_price * (1 + tol):
-                    break
-                if price_col == 'High' and test_price < base_price * (1 - tol):
-                    break
-    unique_levels = []
-    seen = set()
-    for s, e, lvl in levels:
-        if (s, e) not in seen and (e, s) not in seen:
-            unique_levels.append((s, e, lvl))
-            seen.add((s, e))
-    return unique_levels
+# === FVG logic ===
+def find_fvg(df):
+    fvg_zones = []
+    for i in range(2, len(df)):
+        if df['Low'].iloc[i] > df['High'].iloc[i-2]:
+            fvg_zones.append((df.index[i-2], df.index[i], df['High'].iloc[i-2], df['Low'].iloc[i]))
+        elif df['High'].iloc[i] < df['Low'].iloc[i-2]:
+            fvg_zones.append((df.index[i-2], df.index[i], df['Low'].iloc[i-2], df['High'].iloc[i]))
+    return fvg_zones
 
-def plot_candles_with_equals(df, equals_highs=None, equals_lows=None, title=""):
-    x_vals = df['Date'].dt.strftime('%Y-%m-%d').tolist()
-    fig = go.Figure(data=[go.Candlestick(
-        x=x_vals,
-        open=df['Open'],
-        high=df['High'],
-        low=df['Low'],
-        close=df['Close'],
-        increasing_line_color='green',
-        decreasing_line_color='red',
-        name='price'
-    )])
+# === chart drawing ===
+def plot_chart(df, equals, fvg):
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'],
+                                 low=df['Low'], close=df['Close'],
+                                 increasing_line_color='green', decreasing_line_color='red'))
 
-    if equals_highs:
-        for s, e, lvl in equals_highs:
-            fig.add_shape(type='line', x0=s, x1=e, y0=lvl, y1=lvl,
-                          xref='x', yref='y', line=dict(color='orange', width=3))
-    if equals_lows:
-        for s, e, lvl in equals_lows:
-            fig.add_shape(type='line', x0=s, x1=e, y0=lvl, y1=lvl,
-                          xref='x', yref='y', line=dict(color='cyan', width=3))
+    for t, i1, i2, level in equals:
+        color = 'red' if t == 'high' else 'green'
+        fig.add_trace(go.Scatter(x=[i1, i2], y=[level, level], mode='lines',
+                                 line=dict(color=color, width=2), name=f'Equal {t.capitalize()}'))
 
-    # placeholder to mark where FVG detection/overlay would happen
-    # TODO: integrate ICT FVG logic from PineScript in Python equivalent
+    for start, end, hi, lo in fvg:
+        fig.add_shape(type="rect",
+                      x0=start, x1=end,
+                      y0=lo, y1=hi,
+                      fillcolor="rgba(255,165,0,0.3)",
+                      line=dict(width=0))
 
-    fig.update_layout(
-        title=title,
-        template="plotly_dark",
-        xaxis_rangeslider_visible=False,
-        xaxis=dict(type='category', tickangle=-45),
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False)
+    return fig
 
-mode = st.radio("select mode", ("screener", "single ticker"))
+# === main analysis ===
+def analyze_ticker(ticker):
+    df = yf.download(ticker, period='5y', interval='1mo', progress=False)
+    df = df[df['Volume'] > 0]  # drop empty rows
 
-if mode == "screener":
-    tickers_input = st.text_input("enter tickers (comma separated)", "AAPL,MSFT,GOOGL")
-    tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+    equals = find_equals(df)
+    fvg = find_fvg(df)
+    
+    has_bullish = any(t == 'high' and lvl > df['Close'].iloc[-1] for t, _, _, lvl in equals)
+    has_bearish = any(t == 'low' and lvl < df['Close'].iloc[-1] for t, _, _, lvl in equals)
+    return df, equals, fvg, has_bullish, has_bearish
 
-    bullish_stocks = []
-    for ticker in tickers:
-        best_setup = None
-        best_score = 0
-        best_gap = None
-        best_df = None
-        best_tf = None
-        for tf_label, (interval, score) in TIMEFRAMES.items():
-            df = fetch_data(ticker, interval)
-            if df is None or df.empty:
-                continue
-            last_close = df['Close'].iloc[-1]
-            highs_eq = find_equal_levels(df, 'High', tol=0.02)
-            bullish_eq = [(s, e, lvl) for (s, e, lvl) in highs_eq if lvl > last_close]
-            if bullish_eq:
-                closest_level = min(bullish_eq, key=lambda x: x[2])
-                gap = closest_level[2] - last_close
-                if score > best_score or (score == best_score and (best_gap is None or gap < best_gap)):
-                    best_score = score
-                    best_gap = gap
-                    best_setup = bullish_eq
-                    best_df = df
-                    best_tf = tf_label
-        if best_setup:
-            bullish_stocks.append({
-                'ticker': ticker,
-                'score': best_score,
-                'gap': best_gap,
-                'setup': best_setup,
-                'df': best_df,
-                'tf': best_tf
-            })
+# === layout ===
+col1, col2 = st.columns([3,2])
 
-    bullish_stocks = sorted(bullish_stocks, key=lambda x: (-x['score'], x['gap']))
-    st.subheader("top 3 bullish stocks with equals above price")
-    if not bullish_stocks:
-        st.info("no bullish setups found with equals above current price")
-    else:
-        cols = st.columns(min(3, len(bullish_stocks)))
-        for i, stock in enumerate(bullish_stocks[:3]):
-            plot_candles_with_equals(
-                stock['df'],
-                equals_highs=stock['setup'],
-                title=f"{stock['ticker']} bullish equals above price ({stock['tf']} timeframe)"
-            )
+with col1:
+    st.title("ICT Screener App")
 
-elif mode == "single ticker":
-    ticker = st.text_input("enter ticker symbol", "AAPL").upper()
-    tf_selected = st.multiselect("select timeframe(s)", options=list(TIMEFRAMES.keys()), default=["1D", "1W"])
+    ticker_input = st.text_input("Enter a ticker symbol", value="AAPL")
+    if st.button("Analyze"):
+        df, equals, fvg, bullish, bearish = analyze_ticker(ticker_input)
+        fig = plot_chart(df, equals, fvg)
+        st.plotly_chart(fig, use_container_width=True)
 
-    if ticker and tf_selected:
-        for tf_label in tf_selected:
-            interval, _ = TIMEFRAMES[tf_label]
-            df = fetch_data(ticker, interval)
-            if df is None or df.empty:
-                st.warning(f"no data for {ticker} on {tf_label}")
-                continue
-            highs_eq = find_equal_levels(df, 'High', tol=0.02)
-            lows_eq = find_equal_levels(df, 'Low', tol=0.02)
-            plot_candles_with_equals(df, equals_highs=highs_eq, equals_lows=lows_eq, title=f"{ticker} {tf_label} chart with equals")
+with col2:
+    st.subheader("TradingView Chart")
+    tradingview_ticker = st.text_input("Enter ticker for TradingView embed", value="AAPL")
+    tv_embed_code = f"""
+    <iframe src="https://s.tradingview.com/widgetembed/?frameElementId=tradingview_{tradingview_ticker}&symbol={tradingview_ticker}&interval=D&symboledit=1&saveimage=1&toolbarbg=f1f3f6&studies=[]&theme=dark&style=1&timezone=Etc/UTC&withdateranges=1&hidevolume=0&studies_overrides=&overrides=&enabled_features=&disabled_features=" width="100%" height="500" frameborder="0" allowtransparency="true" scrolling="no"></iframe>
+    """
+    html(tv_embed_code, height=500)
+
+st.markdown("---")
+st.markdown("**Note**: Chart includes ICT FVG zones and Equal Highs/Lows. TradingView widget shows live data.")
