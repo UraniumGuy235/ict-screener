@@ -4,11 +4,11 @@ import pandas as pd
 import plotly.graph_objects as go
 
 st.set_page_config(layout="wide")
-st.title("ict bullish stock screener + single ticker viewer")
+st.title("ict fvg yearly screener + single ticker viewer")
 
-def fetch_yearly_resampled(ticker):
+def fetch_yearly_data(ticker):
     try:
-        df = yf.download(ticker, period="max", interval="1mo", progress=False)
+        df = yf.download(ticker, period="max", interval="1d", progress=False)
         if df.empty:
             return None
         df.index = pd.to_datetime(df.index)
@@ -24,37 +24,33 @@ def fetch_yearly_resampled(ticker):
     except Exception:
         return None
 
-def find_fvgs(df):
-    # FVG logic simplified for yearly resampled data
-    fvgs = []
-    # need at least 3 candles to form FVG
-    if len(df) < 3:
-        return fvgs
-    for i in range(2, len(df)):
-        # candle i-2, i-1, i form the gap check on candle i-1
-        high2 = df.loc[i-2, 'High']
-        low2 = df.loc[i-2, 'Low']
-        high1 = df.loc[i-1, 'High']
-        low1 = df.loc[i-1, 'Low']
-        high0 = df.loc[i, 'High']
-        low0 = df.loc[i, 'Low']
+def find_fvg_yearly(df):
+    # fvg logic: check for fair value gaps from 3 consecutive candles (yearly candles here)
+    # fvg when middle candle's range doesn't overlap with previous or next candle's body
+    fvg_zones = []
+    for i in range(1, len(df)-1):
+        prev = df.iloc[i-1]
+        mid = df.iloc[i]
+        nxt = df.iloc[i+1]
 
-        # bearish FVG condition
-        bearish_fvg = (df.loc[i-1, 'Close'] <= high2) and (df.loc[i-1, 'Close'] <= df.loc[i-2, 'Close']) and (high0 < low2)
-        # bullish FVG condition
-        bullish_fvg = (df.loc[i-1, 'Close'] >= low2) and (df.loc[i-1, 'Close'] >= df.loc[i-2, 'Close']) and (low0 > high2)
+        # bearish FVG: middle candle high < prev candle low and next candle low
+        bearish_gap = mid['High'] < prev['Low'] and mid['High'] < nxt['Low']
+        # bullish FVG: middle candle low > prev candle high and next candle high
+        bullish_gap = mid['Low'] > prev['High'] and mid['Low'] > nxt['High']
 
-        if bearish_fvg or bullish_fvg:
-            # store tuple: start_index, end_index, top, bottom, is_bullish
-            top = low1 if bullish_fvg else low2
-            bottom = high2 if bullish_fvg else high1
-            # but better to store top as max, bottom as min of the gap
-            top = max(high1, high2)
-            bottom = min(low1, low2)
-            fvgs.append((i-2, i, bottom, top, bullish_fvg))
-    return fvgs
+        if bearish_gap or bullish_gap:
+            fvg_zones.append({
+                'start_idx': i-1,
+                'end_idx': i+1,
+                'top': max(prev['High'], mid['High'], nxt['High']),
+                'bottom': min(prev['Low'], mid['Low'], nxt['Low'])
+            })
+    return fvg_zones
 
-def plot_yearly_with_fvg(df, fvgs, ticker):
+def price_inside_fvg(price, fvg_zone):
+    return fvg_zone['bottom'] <= price <= fvg_zone['top']
+
+def plot_yearly_fvg(df, fvg_zones, ticker):
     x_vals = df['Date'].dt.strftime('%Y-%m-%d').tolist()
     fig = go.Figure(data=[go.Candlestick(
         x=x_vals,
@@ -66,54 +62,95 @@ def plot_yearly_with_fvg(df, fvgs, ticker):
         decreasing_line_color='red',
         name='price'
     )])
-    # plot FVG boxes extending to the right
-    for start_i, end_i, bottom, top, is_bullish in fvgs:
-        start_x = x_vals[start_i]
-        end_x = x_vals[-1]  # extend all the way to last candle
 
+    # plot fvg zones as rectangles extending rightwards
+    for zone in fvg_zones:
+        start = zone['start_idx']
+        end = zone['end_idx']
+        top = zone['top']
+        bottom = zone['bottom']
+
+        # draw rectangle from start bar to extend 3 more bars right
         fig.add_shape(
-            type="rect",
-            xref="x",
-            yref="y",
-            x0=start_x,
+            type='rect',
+            xref='x',
+            yref='y',
+            x0=x_vals[start],
             y0=bottom,
-            x1=end_x,
+            x1=x_vals[end],
             y1=top,
-            fillcolor="rgba(0,255,0,0.2)" if is_bullish else "rgba(255,0,0,0.2)",
+            fillcolor='rgba(255, 165, 0, 0.3)',  # orange translucent
             line=dict(width=0),
-            layer="below"
+        )
+        # extend the rectangle to the right (by adding an invisible shape beyond last candle)
+        fig.add_shape(
+            type='rect',
+            xref='x',
+            yref='y',
+            x0=x_vals[end],
+            y0=bottom,
+            x1=str(pd.to_datetime(x_vals[end]) + pd.DateOffset(years=3)).split(' ')[0],
+            y1=top,
+            fillcolor='rgba(255, 165, 0, 0.1)',  # lighter orange translucent
+            line=dict(width=0),
         )
 
     fig.update_layout(
-        title=f"{ticker} yearly chart with FVG zones",
+        title=f"{ticker} Yearly Candles + FVG Zones",
         template="plotly_dark",
         xaxis_rangeslider_visible=False,
-        xaxis=dict(type='category', tickangle=-45),
+        xaxis=dict(tickangle=-45)
     )
     st.plotly_chart(fig, use_container_width=True)
 
-# --- main ---
+st.sidebar.header("Select mode")
+mode = st.sidebar.radio("mode", ["single ticker", "yearly fvg screener"])
 
-ticker_input = st.text_input("enter ticker symbol (for yearly FVG scan)", "EOSE").upper()
-
-if ticker_input:
-    df_yearly = fetch_yearly_resampled(ticker_input)
-    if df_yearly is None or df_yearly.empty:
-        st.warning(f"no yearly data available for {ticker_input}")
-    else:
-        fvgs = find_fvgs(df_yearly)
-        last_close = df_yearly['Close'].iloc[-1]
-
-        # check if current price is inside any FVG zone below price
-        inside_fvg = False
-        for _, _, bottom, top, _ in fvgs:
-            if bottom < last_close < top:
-                inside_fvg = True
-                break
-
-        if inside_fvg:
-            st.success(f"{ticker_input} price is inside a yearly FVG zone")
-            plot_yearly_with_fvg(df_yearly, fvgs, ticker_input)
+if mode == "single ticker":
+    ticker = st.sidebar.text_input("Ticker symbol", "EOSE").upper()
+    if ticker:
+        df = fetch_yearly_data(ticker)
+        if df is None or df.empty:
+            st.warning(f"no yearly data for {ticker}")
         else:
-            st.info(f"no yearly FVG zone contains the current price for {ticker_input}")
-            plot_yearly_with_fvg(df_yearly, fvgs, ticker_input)
+            fvg_zones = find_fvg_yearly(df)
+            price = df['Close'].iloc[-1]
+            inside_fvgs = [z for z in fvg_zones if price_inside_fvg(price, z)]
+
+            st.write(f"current price: {price}")
+            if inside_fvgs:
+                st.success(f"price is inside {len(inside_fvgs)} yearly FVG zone(s) below")
+            else:
+                st.info("price not inside any yearly FVG zone")
+
+            plot_yearly_fvg(df, fvg_zones, ticker)
+
+elif mode == "yearly fvg screener":
+    # for demo, keep limited tickers here, expand as needed
+    sp500_tickers = [
+        "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA",
+        "META", "BRK-B", "JNJ", "V", "NVDA",
+        "JPM", "UNH", "HD", "PG", "BAC",
+        "DIS", "MA", "PYPL", "NFLX", "ADBE",
+        # ... expand to full S&P 500 as needed
+    ]
+    found = False
+    checked = []
+    for ticker in sp500_tickers:
+        st.write(f"checking {ticker}...")
+        df = fetch_yearly_data(ticker)
+        if df is None or df.empty:
+            continue
+        fvg_zones = find_fvg_yearly(df)
+        price = df['Close'].iloc[-1]
+        inside_fvgs = [z for z in fvg_zones if price_inside_fvg(price, z)]
+        if inside_fvgs:
+            st.success(f"{ticker} has price inside {len(inside_fvgs)} yearly FVG zone(s) below")
+            plot_yearly_fvg(df, fvg_zones, ticker)
+            found = True
+            break
+        checked.append(ticker)
+
+    if not found:
+        st.warning("no stocks found with price inside a yearly FVG below current price yet")
+
