@@ -5,53 +5,29 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide")
-st.title("ict stock screener dashboard")
+st.title("ict bullish stock screener")
 
+# multi timeframe config: label: (yf_interval, priority_score)
 TIMEFRAMES = {
-    "6M": "1d",
-    "3M": "1d",
-    "1M": "1d",
-    "1W": "1d",
-    "1D": "1h",
-    "1H": "5m"
+    "1M": ("1mo", 3),
+    "1W": ("1wk", 2),
+    "1D": ("1d", 1),
 }
 
-TIMEFRAME_OFFSETS = {
-    "6M": 180,
-    "3M": 90,
-    "1M": 30,
-    "1W": 7,
-    "1D": 1,
-    "1H": 1  # 1 day with 5m interval
-}
-
-interval_option = st.selectbox("select timeframe for analysis:", list(TIMEFRAMES.keys()), index=2)
-interval = TIMEFRAMES[interval_option]
-
-default_start = datetime.today() - timedelta(days=TIMEFRAME_OFFSETS[interval_option])
-start_date = st.date_input("start date", default_start)
-end_date = st.date_input("end date", datetime.today())
-
-tickers_input = st.text_input("enter tickers (comma separated)", "AAPL,MSFT,GOOGL")
-tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
-
-@st.cache_data(show_spinner=False)
-def fetch_data(ticker, start, end, interval):
+def fetch_data(ticker, interval):
     try:
-        df = yf.download(ticker, start=start, end=end + timedelta(days=1), interval=interval, progress=False)
+        df = yf.download(ticker, period="1y", interval=interval, progress=False)
         if df.empty:
             return None
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.droplevel(1)
         df = df[['Open', 'High', 'Low', 'Close', 'Volume']].astype(float)
-        df.reset_index(inplace=True)  # keep Date as column
+        df.reset_index(inplace=True)
         return df
     except Exception as e:
-        st.error(f"error fetching data for {ticker}: {e}")
         return None
 
 def find_equal_levels(df, price_col='Low', tol=0.02):
-    # find pairs of candles that have lows/highs within tol and no intervening breaks above/below
     levels = []
     n = len(df)
     for i in range(n):
@@ -59,7 +35,6 @@ def find_equal_levels(df, price_col='Low', tol=0.02):
         for j in range(i+1, n):
             test_price = df.loc[j, price_col]
             if abs(test_price - base_price) / base_price <= tol:
-                # check no breaks between i and j
                 inter_slice = df.loc[i+1:j-1] if j - i > 1 else pd.DataFrame()
                 if price_col == 'Low':
                     if not inter_slice.empty and (inter_slice['Low'] < min(base_price, test_price)).any():
@@ -69,12 +44,10 @@ def find_equal_levels(df, price_col='Low', tol=0.02):
                         continue
                 levels.append((i, j, (base_price + test_price)/2))
             else:
-                # break early because prices diverge
                 if price_col == 'Low' and test_price > base_price * (1 + tol):
                     break
                 if price_col == 'High' and test_price < base_price * (1 - tol):
                     break
-    # remove duplicates, keep unique pairs only
     unique_levels = []
     seen = set()
     for s, e, lvl in levels:
@@ -83,71 +56,97 @@ def find_equal_levels(df, price_col='Low', tol=0.02):
             seen.add((s, e))
     return unique_levels
 
-st.subheader("scan results")
-found_setups = False
-cols = st.columns(len(tickers))
+def get_bullish_equals_above_price(df, last_close):
+    highs_eq = find_equal_levels(df, 'High', tol=0.02)
+    # filter equals above current price
+    bullish_eq = [(s, e, lvl) for (s, e, lvl) in highs_eq if lvl > last_close]
+    return bullish_eq
 
-for idx, ticker in enumerate(tickers):
-    df = fetch_data(ticker, start_date, end_date, interval)
-    if df is None or df.empty:
-        with cols[idx % len(cols)]:
-            st.warning(f"no data for {ticker}")
-        continue
+tickers_input = st.text_input("enter tickers (comma separated)", "AAPL,MSFT,GOOGL")
+tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 
-    eq_lows_levels = find_equal_levels(df, price_col='Low', tol=0.002)
-    eq_highs_levels = find_equal_levels(df, price_col='High', tol=0.002)
+bullish_stocks = []
 
-    # x axis as category to skip non trading days
-    x_vals = df['Date'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist()
+for ticker in tickers:
+    best_setup = None
+    best_score = 0
+    best_gap = None
+    best_df = None
+    best_tf = None
+    for tf_label, (interval, score) in TIMEFRAMES.items():
+        df = fetch_data(ticker, interval)
+        if df is None or df.empty:
+            continue
+        last_close = df['Close'].iloc[-1]
+        bullish_eq = get_bullish_equals_above_price(df, last_close)
+        if bullish_eq:
+            # get closest equals level above price
+            closest_level = min(bullish_eq, key=lambda x: x[2])
+            gap = closest_level[2] - last_close
+            # update best if better timeframe or smaller gap
+            if score > best_score or (score == best_score and (best_gap is None or gap < best_gap)):
+                best_score = score
+                best_gap = gap
+                best_setup = bullish_eq
+                best_df = df
+                best_tf = tf_label
+    if best_setup:
+        bullish_stocks.append({
+            'ticker': ticker,
+            'score': best_score,
+            'gap': best_gap,
+            'setup': best_setup,
+            'df': best_df,
+            'tf': best_tf
+        })
 
-    fig = go.Figure(data=[go.Candlestick(
-        x=x_vals,
-        open=df['Open'],
-        high=df['High'],
-        low=df['Low'],
-        close=df['Close'],
-        increasing_line_color='green',
-        decreasing_line_color='red',
-        name='price'
-    )])
+# sort bullish stocks by score desc then gap asc
+bullish_stocks = sorted(bullish_stocks, key=lambda x: (-x['score'], x['gap']))
 
-    # draw equals lows lines (solid lime)
-    for start_idx, end_idx, level in eq_lows_levels:
-        fig.add_shape(
-            type='line',
-            x0=start_idx, x1=end_idx,
-            y0=level, y1=level,
-            xref='x', yref='y',
-            line=dict(color='lime', width=3, dash='solid')
+st.subheader("top 3 bullish stocks with equals above price")
+
+if not bullish_stocks:
+    st.info("no bullish setups found with equals above current price")
+else:
+    cols = st.columns(min(3, len(bullish_stocks)))
+    for i, stock in enumerate(bullish_stocks[:3]):
+        df = stock['df']
+        ticker = stock['ticker']
+        tf = stock['tf']
+        last_close = df['Close'].iloc[-1]
+        eqs = stock['setup']
+
+        x_vals = df['Date'].dt.strftime('%Y-%m-%d').tolist()
+
+        fig = go.Figure(data=[go.Candlestick(
+            x=x_vals,
+            open=df['Open'],
+            high=df['High'],
+            low=df['Low'],
+            close=df['Close'],
+            increasing_line_color='green',
+            decreasing_line_color='red',
+            name='price'
+        )])
+
+        # plot bullish equals highs (orange)
+        for start_idx, end_idx, level in eqs:
+            fig.add_shape(
+                type='line',
+                x0=start_idx, x1=end_idx,
+                y0=level, y1=level,
+                xref='x', yref='y',
+                line=dict(color='orange', width=3, dash='solid')
+            )
+
+        fig.update_layout(
+            title=f"{ticker} bullish equals above price ({tf} timeframe)",
+            xaxis_title="Date",
+            yaxis_title="Price",
+            template="plotly_dark",
+            xaxis_rangeslider_visible=False,
+            xaxis=dict(type='category', tickangle=-45),
         )
 
-    # draw equals highs lines (solid orange)
-    for start_idx, end_idx, level in eq_highs_levels:
-        fig.add_shape(
-            type='line',
-            x0=start_idx, x1=end_idx,
-            y0=level, y1=level,
-            xref='x', yref='y',
-            line=dict(color='orange', width=3, dash='solid')
-        )
-
-    fig.update_layout(
-        title=f"{ticker} price with ICT equal highs/lows",
-        xaxis_title="Date",
-        yaxis_title="Price",
-        template="plotly_dark",
-        xaxis_rangeslider_visible=False,
-        xaxis=dict(
-            type='category',
-            tickangle=-45,
-            tickmode='auto',
-            tickfont=dict(size=10)
-        )
-    )
-
-    with cols[idx % len(cols)]:
-        st.plotly_chart(fig, use_container_width=True)
-        found_setups = True
-
-if not found_setups:
-    st.info("no setups found in selected tickers/timeframe. try adjusting date range or tickers.")
+        with cols[i]:
+            st.plotly_chart(fig, use_container_width=True)
