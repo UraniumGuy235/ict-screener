@@ -2,15 +2,16 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
+import numpy as np
 
 st.set_page_config(layout="wide")
 st.title("ict bullish stock screener + single ticker viewer")
 
 TIMEFRAMES = {
-    "1M": ("1mo", 3),
+    "6M": ("1mo", 3),  # only 6M for screener now
     "1W": ("1wk", 2),
     "1D": ("1d", 1),
-    "1H": ("60m", 0.5),  # lower priority
+    "1H": ("60m", 0.5),
 }
 
 def fetch_data(ticker, interval):
@@ -22,41 +23,59 @@ def fetch_data(ticker, interval):
             df.columns = df.columns.droplevel(1)
         df = df[['Open', 'High', 'Low', 'Close', 'Volume']].astype(float)
         df.reset_index(inplace=True)
-        df.rename(columns={df.columns[0]: 'Date'}, inplace=True)  # patch: ensure 'Date' column exists
+        df.rename(columns={df.columns[0]: 'Date'}, inplace=True)
         return df
     except Exception:
         return None
 
-def find_equal_levels(df, price_col='Low', tol=0.02):
-    levels = []
-    n = len(df)
-    for i in range(n):
-        base_price = df.loc[i, price_col]
-        for j in range(i+1, n):
-            test_price = df.loc[j, price_col]
-            if abs(test_price - base_price) / base_price <= tol:
-                inter_slice = df.loc[i+1:j-1] if j - i > 1 else pd.DataFrame()
-                if price_col == 'Low':
-                    if not inter_slice.empty and (inter_slice['Low'] < min(base_price, test_price)).any():
-                        continue
-                else:
-                    if not inter_slice.empty and (inter_slice['High'] > max(base_price, test_price)).any():
-                        continue
-                levels.append((i, j, (base_price + test_price)/2))
-            else:
-                if price_col == 'Low' and test_price > base_price * (1 + tol):
-                    break
-                if price_col == 'High' and test_price < base_price * (1 - tol):
-                    break
-    unique_levels = []
-    seen = set()
-    for s, e, lvl in levels:
-        if (s, e) not in seen and (e, s) not in seen:
-            unique_levels.append((s, e, lvl))
-            seen.add((s, e))
-    return unique_levels
+def find_fvg(df):
+    """
+    Find Fair Value Gaps (FVG) on dataframe
+    Returns list of tuples (start_idx, end_idx, low, high)
+    Ported simplified logic from pine script: looks for gaps between candle1 and candle3
+    where middle candle volatility > threshold
+    """
+    fvg_list = []
+    atr = df['High'] - df['Low']  # rough ATR proxy (simplified)
+    atr_ma = atr.rolling(28).mean()
+    atr_mult = 1.5
 
-def plot_candles_with_equals(df, equals_highs=None, equals_lows=None, title=""):
+    for i in range(3, len(df)):
+        price_diff = df['High'].iloc[i-2] - df['Low'].iloc[i-2]
+        middle_candle_vol = price_diff
+        if atr_ma.iloc[i-2] is None or np.isnan(atr_ma.iloc[i-2]):
+            continue
+        if middle_candle_vol <= atr_ma.iloc[i-2] * atr_mult:
+            continue
+
+        # bear condition FVG (gap down)
+        bear_cond = (df['Close'].iloc[i-3] <= df['High'].iloc[i-2] and
+                     df['Close'].iloc[i-1] <= df['Close'].iloc[i-2] and
+                     df['High'].iloc[i] < df['Low'].iloc[i-2])
+
+        # bull condition FVG (gap up)
+        bull_cond = (df['Close'].iloc[i-3] >= df['Low'].iloc[i-2] and
+                     df['Close'].iloc[i-1] >= df['Close'].iloc[i-2] and
+                     df['Low'].iloc[i] > df['High'].iloc[i-2])
+
+        if bear_cond or bull_cond:
+            is_up_candle = df['Open'].iloc[i-1] <= df['Close'].iloc[i-1]
+            top = df['Low'].iloc[i-2] if is_up_candle else df['Low'].iloc[i]
+            bottom = df['High'].iloc[i] if is_up_candle else df['High'].iloc[i-2]
+            # store as (start idx, end idx, low, high) for FVG box
+            fvg_list.append((i-2, i, bottom, top))  # invert low/high for plotting consistency
+
+    return fvg_list
+
+def price_in_fvg(price, fvg):
+    """
+    check if price is inside a fvg range (low < price < high)
+    fvg tuple: (start_idx, end_idx, low, high)
+    """
+    _, _, low, high = fvg
+    return low < price < high
+
+def plot_candles_with_fvg(df, fvg_list=None, title=""):
     x_vals = df['Date'].dt.strftime('%Y-%m-%d').tolist()
     fig = go.Figure(data=[go.Candlestick(
         x=x_vals,
@@ -69,26 +88,17 @@ def plot_candles_with_equals(df, equals_highs=None, equals_lows=None, title=""):
         name='price'
     )])
 
-    if equals_highs:
-        for s, e, lvl in equals_highs:
+    if fvg_list:
+        for start, end, low, high in fvg_list:
             fig.add_shape(
-                type='line',
-                x0=s, x1=e,
-                y0=lvl, y1=lvl,
+                type='rect',
+                x0=start, x1=end,
+                y0=low, y1=high,
                 xref='x', yref='y',
-                line=dict(color='orange', width=3, dash='solid'),
-                name='equals high'
+                fillcolor='rgba(255, 165, 0, 0.3)',  # orange transparent
+                line=dict(color='rgba(255,165,0,0.8)', width=2, dash='dash')
             )
-    if equals_lows:
-        for s, e, lvl in equals_lows:
-            fig.add_shape(
-                type='line',
-                x0=s, x1=e,
-                y0=lvl, y1=lvl,
-                xref='x', yref='y',
-                line=dict(color='cyan', width=3, dash='solid'),
-                name='equals low'
-            )
+
     fig.update_layout(
         title=title,
         template="plotly_dark",
@@ -105,49 +115,34 @@ if mode == "screener":
 
     bullish_stocks = []
     for ticker in tickers:
-        best_setup = None
-        best_score = 0
-        best_gap = None
-        best_df = None
-        best_tf = None
-        for tf_label, (interval, score) in TIMEFRAMES.items():
-            df = fetch_data(ticker, interval)
-            if df is None or df.empty:
-                continue
-            last_close = df['Close'].iloc[-1]
-            highs_eq = find_equal_levels(df, 'High', tol=0.02)
-            bullish_eq = [(s, e, lvl) for (s, e, lvl) in highs_eq if lvl > last_close]
-            if bullish_eq:
-                closest_level = min(bullish_eq, key=lambda x: x[2])
-                gap = closest_level[2] - last_close
-                if score > best_score or (score == best_score and (best_gap is None or gap < best_gap)):
-                    best_score = score
-                    best_gap = gap
-                    best_setup = bullish_eq
-                    best_df = df
-                    best_tf = tf_label
-        if best_setup:
+        interval, score = TIMEFRAMES["6M"]
+        df = fetch_data(ticker, interval)
+        if df is None or df.empty:
+            continue
+        last_close = df['Close'].iloc[-1]
+        fvg_list = find_fvg(df)
+        # check if price has entered any FVG below current price
+        fvg_below = [fvg for fvg in fvg_list if price_in_fvg(last_close, fvg) and fvg[3] < last_close]
+        if fvg_below:
             bullish_stocks.append({
                 'ticker': ticker,
-                'score': best_score,
-                'gap': best_gap,
-                'setup': best_setup,
-                'df': best_df,
-                'tf': best_tf
+                'score': score,
+                'df': df,
+                'fvg': fvg_below
             })
 
-    bullish_stocks = sorted(bullish_stocks, key=lambda x: (-x['score'], x['gap']))
-    st.subheader("top 3 bullish stocks with equals above price")
+    st.subheader("top stocks with price inside 6M FVG below close")
     if not bullish_stocks:
-        st.info("no bullish setups found with equals above current price")
+        st.info("no stocks found with price inside a 6M FVG below current price")
     else:
         cols = st.columns(min(3, len(bullish_stocks)))
         for i, stock in enumerate(bullish_stocks[:3]):
-            plot_candles_with_equals(
+            plot_candles_with_fvg(
                 stock['df'],
-                equals_highs=stock['setup'],
-                title=f"{stock['ticker']} bullish equals above price ({stock['tf']} timeframe)"
+                fvg_list=stock['fvg'],
+                title=f"{stock['ticker']} price inside 6M FVG (6M timeframe)"
             )
+
 elif mode == "single ticker":
     ticker = st.text_input("enter ticker symbol", "AAPL").upper()
     tf_selected = st.multiselect("select timeframe(s)", options=list(TIMEFRAMES.keys()), default=["1D", "1W"])
@@ -159,6 +154,5 @@ elif mode == "single ticker":
             if df is None or df.empty:
                 st.warning(f"no data for {ticker} on {tf_label}")
                 continue
-            highs_eq = find_equal_levels(df, 'High', tol=0.02)
-            lows_eq = find_equal_levels(df, 'Low', tol=0.02)
-            plot_candles_with_equals(df, equals_highs=highs_eq, equals_lows=lows_eq, title=f"{ticker} {tf_label} chart with equals")
+            fvg_list = find_fvg(df)
+            plot_candles_with_fvg(df, fvg_list=fvg_list, title=f"{ticker} {tf_label} chart with FVG")
