@@ -1,39 +1,43 @@
 import streamlit as st
 import yfinance as yf
-import mplfinance as mpf
 import pandas as pd
-from io import BytesIO
-from PIL import Image
+import plotly.graph_objects as go
 
 st.set_page_config(layout="wide")
-st.title("📈 Candlestick Chart Viewer")
+st.title("🌑 Interactive Dark Candlestick Chart")
 
 ticker = st.text_input("Enter a stock ticker (e.g., AAPL, MSFT, GOOGL):", "AAPL")
 period = st.selectbox("Select historical period:", ['1mo', '3mo', '6mo', '1y', '2y', '5y', 'max'], index=3)
 interval = st.selectbox("Select interval:", ['1d', '1h', '30m', '15m'], index=0)
 
 if st.button("Fetch and Plot"):
-    try:
-        df = yf.download(ticker, period=period, interval=interval)
+    df = yf.download(ticker, period=period, interval=interval)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
 
-        # flatten multiindex columns if any
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+    df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+    df.index = pd.to_datetime(df.index)
 
-        df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+    fig = go.Figure(data=[go.Candlestick(
+        x=df.index,
+        open=df['Open'],
+        high=df['High'],
+        low=df['Low'],
+        close=df['Close'],
+        increasing_line_color='cyan',
+        decreasing_line_color='magenta',
+        name='Price'
+    )])
 
-        # coerce to numeric, drop rows with NaNs
-        df = df.apply(pd.to_numeric, errors='coerce').dropna()
-        df = df.astype(float)
-        df.index = pd.to_datetime(df.index)
+    fig.update_layout(
+        template='plotly_dark',
+        title=f'{ticker} Candlestick Chart',
+        xaxis_rangeslider_visible=True,
+        xaxis_title='Date',
+        yaxis_title='Price',
+        height=700,
+        margin=dict(l=40, r=40, t=60, b=40),
+        hovermode='x unified',
+    )
 
-        # plot candlestick chart with volume and moving averages
-        buf = BytesIO()
-        mpf.plot(df, type='candle', style='charles', volume=True, mav=(3,6,9),
-                 show_nontrading=True, savefig=buf)
-        buf.seek(0)
-        img = Image.open(buf)
-        st.image(img, caption=f"{ticker} Candlestick Chart", use_column_width=True)
-
-    except Exception as e:
-        st.error(f"something went wrong: {e}")
+    st.plotly_chart(fig, use_container_width=True)
