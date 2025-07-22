@@ -11,17 +11,21 @@ period = st.selectbox("Select historical period:", ['1mo', '3mo', '6mo', '1y', '
 interval = st.selectbox("Select interval:", ['1d', '1h', '30m', '15m'], index=0)
 
 def detect_fvg(df):
-    # bullish fair value gap: low of prev bar > high of bar before that
+    # bullish fair value gap: low of bar i-1 > high of bar i-2
     df['bullish_fvg'] = df['Low'].shift(1) > df['High'].shift(2)
     return df
 
-def find_equal_lows(df, tol=0.001):
-    # rolling 3 bars: lows roughly equal within tolerance
-    lows = df['Low'].rolling(3).apply(lambda x: abs(x[0] - x[1]) < tol and abs(x[1] - x[2]) < tol, raw=True)
+def find_equal_lows(df, tol=0.005):
+    # lows equal within 0.5% tolerance
+    lows = df['Low'].rolling(3).apply(
+        lambda x: abs(x[0] - x[1]) / x[1] < tol and abs(x[1] - x[2]) / x[1] < tol,
+        raw=True)
     return lows.fillna(0).astype(bool)
 
-def find_equal_highs(df, tol=0.001):
-    highs = df['High'].rolling(3).apply(lambda x: abs(x[0] - x[1]) < tol and abs(x[1] - x[2]) < tol, raw=True)
+def find_equal_highs(df, tol=0.005):
+    highs = df['High'].rolling(3).apply(
+        lambda x: abs(x[0] - x[1]) / x[1] < tol and abs(x[1] - x[2]) / x[1] < tol,
+        raw=True)
     return highs.fillna(0).astype(bool)
 
 def open_confluence(df):
@@ -36,7 +40,6 @@ if st.button("Fetch and Plot"):
     df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
     df.index = pd.to_datetime(df.index)
 
-    # detect ict setups
     df = detect_fvg(df)
     df['eq_lows'] = find_equal_lows(df)
     df['eq_highs'] = find_equal_highs(df)
@@ -48,34 +51,40 @@ if st.button("Fetch and Plot"):
         high=df['High'],
         low=df['Low'],
         close=df['Close'],
-        increasing_line_color='cyan',
-        decreasing_line_color='magenta',
+        increasing_line_color='green',
+        decreasing_line_color='red',
         name='Price'
     )])
 
-    # plot bullish FVG zones as translucent rectangles
+    # plot bullish FVG zones as translucent green rectangles between bars i-2 and i-1
     fvg_bars = df[df['bullish_fvg']]
     for i in fvg_bars.index:
-        # the FVG is between bar i-2 high and bar i-1 low
-        high = df.loc[i - pd.Timedelta(days=1)]['High'] if (i - pd.Timedelta(days=1)) in df.index else None
-        low = df.loc[i - pd.Timedelta(days=2)]['Low'] if (i - pd.Timedelta(days=2)) in df.index else None
-        if high is None or low is None:
+        i_minus_1 = df.index.get_loc(i) - 1
+        i_minus_2 = df.index.get_loc(i) - 2
+        if i_minus_1 < 0 or i_minus_2 < 0:
             continue
+        x0 = df.index[i_minus_2]
+        x1 = df.index[i_minus_1]
+        y0 = df.loc[x1, 'High']
+        y1 = df.loc[x0, 'Low']
         fig.add_shape(type="rect",
-                      x0=i - pd.Timedelta(days=2), x1=i - pd.Timedelta(days=1),
-                      y0=high, y1=low,
-                      fillcolor="green", opacity=0.2, line_width=0)
+                      x0=x0, x1=x1,
+                      y0=y0, y1=y1,
+                      fillcolor="rgba(0,255,0,0.2)", line_width=0)
 
-    # plot equal lows and highs as horizontal lines spanning full x-axis range
+    # equal lows horizontal lines
     eq_lows_vals = df.loc[df['eq_lows'], 'Low'].unique()
     for lvl in eq_lows_vals:
-        fig.add_hline(y=lvl, line=dict(color='lime', width=1, dash='dash'), annotation_text='Equal Lows', annotation_position="bottom left")
+        fig.add_hline(y=lvl, line=dict(color='lime', width=1, dash='dash'),
+                      annotation_text='Equal Lows', annotation_position="bottom left")
 
+    # equal highs horizontal lines
     eq_highs_vals = df.loc[df['eq_highs'], 'High'].unique()
     for lvl in eq_highs_vals:
-        fig.add_hline(y=lvl, line=dict(color='orange', width=1, dash='dash'), annotation_text='Equal Highs', annotation_position="top left")
+        fig.add_hline(y=lvl, line=dict(color='orange', width=1, dash='dash'),
+                      annotation_text='Equal Highs', annotation_position="top left")
 
-    # plot open confluence as blue markers on candles
+    # open confluence blue markers
     confluence_idx = df.index[df['open_confluence']]
     fig.add_trace(go.Scatter(
         x=confluence_idx,
