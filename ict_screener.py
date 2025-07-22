@@ -3,42 +3,31 @@ import yfinance as yf
 import plotly.graph_objects as go
 import pandas as pd
 
-st.set_page_config(layout="wide")
+st.set_page_config(layout="wide", page_title="ICT Screener", page_icon="📈")
 
-# --- TIMEFRAME MAPPING ---
-TIMEFRAMES = {
-    "1M": "1mo",
-    "1W": "1wk",
-    "1D": "1d",
-    "1H": "60m",
-    "3M": "3mo",
-    "6M": "6mo"
-}
-
-# --- FETCH DATA ---
-def fetch_data(ticker, interval):
+def fetch_data(ticker, period="5y", interval="1mo"):
     try:
-        data = yf.download(ticker, period="5y", interval=interval, auto_adjust=False)
-        if data.empty:
-            return None
-        return data
+        df = yf.download(ticker, period=period, interval=interval)
+        df.dropna(inplace=True)
+        return df
     except Exception as e:
-        print(f"Error fetching data for {ticker}: {e}")
-        return None
+        st.error(f"Error fetching data for {ticker}: {e}")
+        return pd.DataFrame()
 
-# --- FIND EQUALS ---
 def find_equals(df, tolerance=0.01):
     equals = []
     for i in range(len(df)):
-        for j in range(i+1, len(df)):
+        for j in range(i + 1, len(df)):
             if df.index[i] >= df.index[j]:
                 continue
-            subset = df.iloc[i+1:j]
+            subset = df.iloc[i + 1:j]
             max_high = subset['High'].max() if not subset.empty else float('-inf')
             min_low = subset['Low'].min() if not subset.empty else float('inf')
 
-            hi1, hi2 = df['High'].iloc[i], df['High'].iloc[j]
-            lo1, lo2 = df['Low'].iloc[i], df['Low'].iloc[j]
+            hi1 = float(df['High'].iloc[i])
+            hi2 = float(df['High'].iloc[j])
+            lo1 = float(df['Low'].iloc[i])
+            lo2 = float(df['Low'].iloc[j])
 
             if abs(hi1 - hi2) <= tolerance and max_high < min(hi1, hi2):
                 equals.append(('high', i, j, hi1))
@@ -46,86 +35,82 @@ def find_equals(df, tolerance=0.01):
                 equals.append(('low', i, j, lo1))
     return equals
 
-# --- PLOT CHART ---
-def plot_chart(df, equals, title):
+def plot_chart(df, equals, title="Chart"):
     fig = go.Figure()
 
     fig.add_trace(go.Candlestick(
         x=df.index,
-        open=df['Open'],
-        high=df['High'],
-        low=df['Low'],
-        close=df['Close'],
+        open=df['Open'], high=df['High'],
+        low=df['Low'], close=df['Close'],
         increasing_line_color='green',
         decreasing_line_color='red',
-        name='Price'))
+        name='Price'
+    ))
 
     for eq in equals:
-        kind, i, j, level = eq
+        typ, i, j, lvl = eq
+        color = "lime" if typ == "low" else "magenta"
         fig.add_trace(go.Scatter(
             x=[df.index[i], df.index[j]],
-            y=[level, level],
+            y=[lvl, lvl],
             mode="lines",
-            line=dict(color="cyan" if kind=="high" else "magenta", width=1),
-            name=f"Equals {kind.capitalize()}"
+            line=dict(color=color, width=2),
+            name=f"Equals {typ}"
         ))
 
     fig.update_layout(
-        title=title,
-        xaxis_rangeslider_visible=False,
         template="plotly_dark",
-        dragmode='pan',
+        title=title,
+        xaxis_rangeslider_visible=False
     )
-
     return fig
 
-# --- MAIN SCREENING ---
+def analyze_ticker(ticker, interval="1mo"):
+    df = fetch_data(ticker, interval=interval)
+    if df.empty:
+        return None, None, False
+
+    equals = find_equals(df, tolerance=0.01)
+
+    latest_close = df['Close'].iloc[-1]
+    has_bullish = any(t == 'high' and lvl > latest_close for t, _, _, lvl in equals)
+    has_bearish = any(t == 'low' and lvl < latest_close for t, _, _, lvl in equals)
+
+    return df, equals, (has_bullish, has_bearish)
+
 def main():
-    st.title("ICT Screener")
+    st.title("📈 ICT Screener")
 
-    sample_tickers = ["AAPL", "MSFT", "TSLA", "AMZN", "NVDA", "META", "GOOGL", "NFLX", "AMD", "INTC"]
+    tickers = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOG", "AMD", "META", "AMZN", "BA", "SHOP"]
+    selected_ticker = st.text_input("Search a specific ticker", value="AAPL").upper()
 
-    selected_interval = "1M"  # fixed
-    bullish_setups = []
-    bearish_setups = []
+    st.subheader("📊 Screened Setups")
+    bullish, bearish = [], []
 
-    for ticker in sample_tickers:
-        df = fetch_data(ticker, TIMEFRAMES[selected_interval])
-        if df is None or len(df) < 10:
-            continue
-
-        equals = find_equals(df, tolerance=0.01)
-        if not equals:
-            continue
-
-        current_price = df['Close'].iloc[-1]
-        highs_above = [eq for eq in equals if eq[0] == 'high' and eq[3] > current_price]
-        lows_below = [eq for eq in equals if eq[0] == 'low' and eq[3] < current_price]
-
-        if highs_above and not lows_below:
-            bullish_setups.append((ticker, df, equals))
-        elif lows_below and not highs_above:
-            bearish_setups.append((ticker, df, equals))
-
-    st.subheader("Bullish Setups")
-    for ticker, df, equals in bullish_setups:
-        st.plotly_chart(plot_chart(df, equals, f"Bullish: {ticker}"), use_container_width=True)
-
-    st.subheader("Bearish Setups")
-    for ticker, df, equals in bearish_setups:
-        st.plotly_chart(plot_chart(df, equals, f"Bearish: {ticker}"), use_container_width=True)
-
-    st.subheader("Custom Chart")
-    custom_ticker = st.text_input("Enter Ticker", value="AAPL")
-    custom_interval = st.selectbox("Select Timeframe", list(TIMEFRAMES.keys()), index=0)
-
-    if st.button("Fetch Custom Chart"):
-        df = fetch_data(custom_ticker, TIMEFRAMES[custom_interval])
+    progress = st.progress(0)
+    for idx, ticker in enumerate(tickers):
+        df, equals, (has_bullish, has_bearish) = analyze_ticker(ticker)
         if df is not None:
-            equals = find_equals(df, tolerance=0.01)
-            st.plotly_chart(plot_chart(df, equals, f"Custom Chart: {custom_ticker}"), use_container_width=True)
-        else:
-            st.error("Failed to fetch data.")
+            if has_bullish and not has_bearish:
+                bullish.append((ticker, df, equals))
+            elif has_bearish and not has_bullish:
+                bearish.append((ticker, df, equals))
+        progress.progress((idx + 1) / len(tickers))
 
-if __name__ == '__main__':
+    st.subheader("🟢 Bullish Setups (Equals Above)")
+    for ticker, df, equals in bullish[:3]:
+        st.plotly_chart(plot_chart(df, equals, title=f"{ticker} (Bullish)"), use_container_width=True)
+
+    st.subheader("🔴 Bearish Setups (Equals Below)")
+    for ticker, df, equals in bearish[:3]:
+        st.plotly_chart(plot_chart(df, equals, title=f"{ticker} (Bearish)"), use_container_width=True)
+
+    st.subheader("🔍 Detailed View")
+    df, equals, _ = analyze_ticker(selected_ticker)
+    if df is not None:
+        st.plotly_chart(plot_chart(df, equals, title=f"{selected_ticker} - Detailed"), use_container_width=True)
+    else:
+        st.warning(f"No data found for {selected_ticker}")
+
+if __name__ == "__main__":
     main()
