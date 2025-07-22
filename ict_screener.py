@@ -2,35 +2,35 @@ import streamlit as st
 import yfinance as yf
 import mplfinance as mpf
 import pandas as pd
-import matplotlib.pyplot as plt
+from io import BytesIO
+from PIL import Image
 
-st.title("candlestick chart viewer")
+st.set_page_config(layout="wide")
+st.title("📈 Candlestick Chart Viewer")
 
-ticker = st.text_input("enter stock ticker (e.g. AAPL)", "AAPL").upper()
+ticker = st.text_input("Enter a stock ticker (e.g., AAPL, MSFT, GOOGL):", "AAPL")
+period = st.selectbox("Select historical period:", ['1mo', '3mo', '6mo', '1y', '2y', '5y', 'max'], index=3)
+interval = st.selectbox("Select interval:", ['1d', '1h', '30m', '15m'], index=0)
 
-@st.cache_data
-def load_data(ticker):
-    df = yf.download(ticker, period='6mo', interval='1d')
-    df = df[['Open', 'High', 'Low', 'Close', 'Volume']].apply(pd.to_numeric, errors='coerce')
-    df.dropna(inplace=True)
-    df.index.name = 'Date'
-    return df
+if st.button("Fetch and Plot"):
+    try:
+        df = yf.download(ticker, period=period, interval=interval)
 
-try:
-    df = load_data(ticker)
-    st.write(f"showing last {len(df)} days of data for {ticker}")
+        if df.empty:
+            st.error("No data returned. Check ticker or timeframe.")
+        else:
+            # Ensure proper formatting
+            df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+            df = df.astype(float)
+            df.index = pd.to_datetime(df.index)
 
-    fig, axlist = mpf.plot(
-        df,
-        type='candle',
-        style='charles',
-        volume=True,
-        mav=(3, 6, 9),
-        show_nontrading=True,
-        returnfig=True
-    )
+            # Plot and display
+            fig_buf = BytesIO()
+            mpf.plot(df, type='candle', style='charles', volume=True, mav=(3, 6, 9),
+                     show_nontrading=True, savefig=fig_buf)
+            fig_buf.seek(0)
+            img = Image.open(fig_buf)
+            st.image(img, caption=f"{ticker} Candlestick Chart", use_column_width=True)
 
-    st.pyplot(fig)
-
-except Exception as e:
-    st.error(f"something went wrong: {e}")
+    except Exception as e:
+        st.error(f"something went wrong: {e}")
