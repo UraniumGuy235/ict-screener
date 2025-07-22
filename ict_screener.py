@@ -16,7 +16,6 @@ TIMEFRAMES = {
     "1H": "5m"
 }
 
-# map timeframes to yfinance intervals and appropriate start date offsets
 TIMEFRAME_OFFSETS = {
     "6M": 180,
     "3M": 90,
@@ -29,7 +28,6 @@ TIMEFRAME_OFFSETS = {
 interval_option = st.selectbox("select timeframe for analysis:", list(TIMEFRAMES.keys()), index=2)
 interval = TIMEFRAMES[interval_option]
 
-# auto set start date based on timeframe offset, override with input if desired
 default_start = datetime.today() - timedelta(days=TIMEFRAME_OFFSETS[interval_option])
 start_date = st.date_input("start date", default_start)
 end_date = st.date_input("end date", datetime.today())
@@ -43,43 +41,44 @@ def fetch_data(ticker, start, end, interval):
         df = yf.download(ticker, start=start, end=end + timedelta(days=1), interval=interval, progress=False)
         if df.empty:
             return None
-        # fix column names if multiindex returned
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.droplevel(1)
         df = df[['Open', 'High', 'Low', 'Close', 'Volume']].astype(float)
+        df.reset_index(inplace=True)  # keep Date as column
         return df
     except Exception as e:
         st.error(f"error fetching data for {ticker}: {e}")
         return None
 
-def find_equal_levels(df, price_col='Low', tol=0.01):
+def find_equal_levels(df, price_col='Low', tol=0.02):
+    # find pairs of candles that have lows/highs within tol and no intervening breaks above/below
     levels = []
     n = len(df)
     for i in range(n):
-        base_price = df.iloc[i][price_col]
-        cluster = [i]
+        base_price = df.loc[i, price_col]
         for j in range(i+1, n):
-            test_price = df.iloc[j][price_col]
-            if abs(test_price - base_price) / base_price < tol:
-                # check no break in between
-                inter_df = df.iloc[i+1:j]
+            test_price = df.loc[j, price_col]
+            if abs(test_price - base_price) / base_price <= tol:
+                # check no breaks between i and j
+                inter_slice = df.loc[i+1:j-1] if j - i > 1 else pd.DataFrame()
                 if price_col == 'Low':
-                    if (inter_df['Low'] < base_price).any():
-                        break
+                    if not inter_slice.empty and (inter_slice['Low'] < min(base_price, test_price)).any():
+                        continue
                 else:
-                    if (inter_df['High'] > base_price).any():
-                        break
-                cluster.append(j)
+                    if not inter_slice.empty and (inter_slice['High'] > max(base_price, test_price)).any():
+                        continue
+                levels.append((i, j, (base_price + test_price)/2))
             else:
-                break
-        if len(cluster) > 1:
-            levels.append((cluster[0], cluster[-1], base_price))
-
-    # remove duplicates by start-end index
+                # break early because prices diverge
+                if price_col == 'Low' and test_price > base_price * (1 + tol):
+                    break
+                if price_col == 'High' and test_price < base_price * (1 - tol):
+                    break
+    # remove duplicates, keep unique pairs only
     unique_levels = []
     seen = set()
     for s, e, lvl in levels:
-        if (s, e) not in seen:
+        if (s, e) not in seen and (e, s) not in seen:
             unique_levels.append((s, e, lvl))
             seen.add((s, e))
     return unique_levels
@@ -95,11 +94,14 @@ for idx, ticker in enumerate(tickers):
             st.warning(f"no data for {ticker}")
         continue
 
-    eq_lows_levels = find_equal_levels(df, price_col='Low', tol=0.005)  # 2% tolerance
-    eq_highs_levels = find_equal_levels(df, price_col='High', tol=0.005)
+    eq_lows_levels = find_equal_levels(df, price_col='Low', tol=0.02)
+    eq_highs_levels = find_equal_levels(df, price_col='High', tol=0.02)
+
+    # x axis as category to skip non trading days
+    x_vals = df['Date'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist()
 
     fig = go.Figure(data=[go.Candlestick(
-        x=df.index,
+        x=x_vals,
         open=df['Open'],
         high=df['High'],
         low=df['Low'],
@@ -109,30 +111,38 @@ for idx, ticker in enumerate(tickers):
         name='price'
     )])
 
-    # plot equal lows horizontal lines
+    # draw equals lows lines (solid lime)
     for start_idx, end_idx, level in eq_lows_levels:
-        x0 = df.index[start_idx]
-        x1 = df.index[end_idx]
-        fig.add_shape(type='line',
-                      x0=x0, x1=x1,
-                      y0=level, y1=level,
-                      line=dict(color='lime', width=2))
+        fig.add_shape(
+            type='line',
+            x0=start_idx, x1=end_idx,
+            y0=level, y1=level,
+            xref='x', yref='y',
+            line=dict(color='lime', width=3, dash='solid')
+        )
 
-    # plot equal highs horizontal lines
+    # draw equals highs lines (solid orange)
     for start_idx, end_idx, level in eq_highs_levels:
-        x0 = df.index[start_idx]
-        x1 = df.index[end_idx]
-        fig.add_shape(type='line',
-                      x0=x0, x1=x1,
-                      y0=level, y1=level,
-                      line=dict(color='orange', width=2))
+        fig.add_shape(
+            type='line',
+            x0=start_idx, x1=end_idx,
+            y0=level, y1=level,
+            xref='x', yref='y',
+            line=dict(color='orange', width=3, dash='solid')
+        )
 
     fig.update_layout(
         title=f"{ticker} price with ICT equal highs/lows",
         xaxis_title="Date",
         yaxis_title="Price",
         template="plotly_dark",
-        xaxis_rangeslider_visible=False
+        xaxis_rangeslider_visible=False,
+        xaxis=dict(
+            type='category',
+            tickangle=-45,
+            tickmode='auto',
+            tickfont=dict(size=10)
+        )
     )
 
     with cols[idx % len(cols)]:
