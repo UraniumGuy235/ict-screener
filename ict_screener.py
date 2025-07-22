@@ -2,42 +2,101 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
+from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide")
-st.title("🌑 ICT Setup Candlestick Chart")
+st.title("ict stock screener dashboard")
 
-ticker = st.text_input("Enter ticker (e.g., AAPL, MSFT):", "AAPL")
-period = st.selectbox("Select historical period:", ['1mo', '3mo', '6mo', '1y', '2y', '5y', 'max'], index=3)
-interval = st.selectbox("Select interval:", ['1d', '1h', '30m', '15m'], index=0)
+TIMEFRAMES = {
+    "6M": "1d",
+    "3M": "1d",
+    "1M": "1d",
+    "1W": "1d",
+    "1D": "1h",
+    "1H": "5m"
+}
 
-def detect_fvg(df):
-    # bullish fair value gap: low of bar i-1 > high of bar i-2
-    df['bullish_fvg'] = df['Low'].shift(1) > df['High'].shift(2)
-    return df
+# map timeframes to yfinance intervals and appropriate start date offsets
+TIMEFRAME_OFFSETS = {
+    "6M": 180,
+    "3M": 90,
+    "1M": 30,
+    "1W": 7,
+    "1D": 1,
+    "1H": 1  # 1 day with 5m interval
+}
 
-def find_equal_lows(df, tol=0.01):  # 1% tolerance
-    lows = df['Low'].rolling(3).apply(
-        lambda x: abs(x[0] - x[1]) / x[1] < tol and abs(x[1] - x[2]) / x[1] < tol,
-        raw=True)
-    return lows.fillna(0).astype(bool)
+interval_option = st.selectbox("select timeframe for analysis:", list(TIMEFRAMES.keys()), index=2)
+interval = TIMEFRAMES[interval_option]
 
-def find_equal_highs(df, tol=0.01):  # 1% tolerance
-    highs = df['High'].rolling(3).apply(
-        lambda x: abs(x[0] - x[1]) / x[1] < tol and abs(x[1] - x[2]) / x[1] < tol,
-        raw=True)
-    return highs.fillna(0).astype(bool)
+# auto set start date based on timeframe offset, override with input if desired
+default_start = datetime.today() - timedelta(days=TIMEFRAME_OFFSETS[interval_option])
+start_date = st.date_input("start date", default_start)
+end_date = st.date_input("end date", datetime.today())
 
-if st.button("Fetch and Plot"):
-    df = yf.download(ticker, period=period, interval=interval)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+tickers_input = st.text_input("enter tickers (comma separated)", "AAPL,MSFT,GOOGL")
+tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 
-    df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
-    df.index = pd.to_datetime(df.index)
+@st.cache_data(show_spinner=False)
+def fetch_data(ticker, start, end, interval):
+    try:
+        df = yf.download(ticker, start=start, end=end + timedelta(days=1), interval=interval, progress=False)
+        if df.empty:
+            return None
+        # fix column names if multiindex returned
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        df = df[['Open', 'High', 'Low', 'Close', 'Volume']].astype(float)
+        return df
+    except Exception as e:
+        st.error(f"error fetching data for {ticker}: {e}")
+        return None
 
-    df = detect_fvg(df)
-    df['eq_lows'] = find_equal_lows(df)
-    df['eq_highs'] = find_equal_highs(df)
+def find_equal_levels(df, price_col='Low', tol=0.01):
+    levels = []
+    n = len(df)
+    for i in range(n):
+        base_price = df.iloc[i][price_col]
+        cluster = [i]
+        for j in range(i+1, n):
+            test_price = df.iloc[j][price_col]
+            if abs(test_price - base_price) / base_price < tol:
+                # check no break in between
+                inter_df = df.iloc[i+1:j]
+                if price_col == 'Low':
+                    if (inter_df['Low'] < base_price).any():
+                        break
+                else:
+                    if (inter_df['High'] > base_price).any():
+                        break
+                cluster.append(j)
+            else:
+                break
+        if len(cluster) > 1:
+            levels.append((cluster[0], cluster[-1], base_price))
+
+    # remove duplicates by start-end index
+    unique_levels = []
+    seen = set()
+    for s, e, lvl in levels:
+        if (s, e) not in seen:
+            unique_levels.append((s, e, lvl))
+            seen.add((s, e))
+    return unique_levels
+
+st.subheader("scan results")
+found_setups = False
+cols = st.columns(len(tickers))
+
+for idx, ticker in enumerate(tickers):
+    df = fetch_data(ticker, start_date, end_date, interval)
+    if df is None or df.empty:
+        with cols[idx % len(cols)]:
+            st.warning(f"no data for {ticker}")
+        continue
+
+    eq_lows_levels = find_equal_levels(df, price_col='Low', tol=0.02)  # 2% tolerance
+    eq_highs_levels = find_equal_levels(df, price_col='High', tol=0.02)
 
     fig = go.Figure(data=[go.Candlestick(
         x=df.index,
@@ -47,62 +106,26 @@ if st.button("Fetch and Plot"):
         close=df['Close'],
         increasing_line_color='green',
         decreasing_line_color='red',
-        name='Price'
+        name='price'
     )])
 
-    # plot bullish FVG zones as translucent green rectangles between bars i-2 and i-1
-    fvg_bars = df[df['bullish_fvg']]
-    for i in fvg_bars.index:
-        i_minus_1 = df.index.get_loc(i) - 1
-        i_minus_2 = df.index.get_loc(i) - 2
-        if i_minus_1 < 0 or i_minus_2 < 0:
-            continue
-        x0 = df.index[i_minus_2]
-        x1 = df.index[i_minus_1]
-        y0 = df.loc[x1, 'High']
-        y1 = df.loc[x0, 'Low']
-        fig.add_shape(type="rect",
+    # plot equal lows horizontal lines
+    for start_idx, end_idx, level in eq_lows_levels:
+        x0 = df.index[start_idx]
+        x1 = df.index[end_idx]
+        fig.add_shape(type='line',
                       x0=x0, x1=x1,
-                      y0=y0, y1=y1,
-                      fillcolor="rgba(0,255,0,0.2)", line_width=0)
+                      y0=level, y1=level,
+                      line=dict(color='lime', width=2))
 
-    # equal lows lines connecting the two lows forming the pattern
-    eq_lows_idx = df.index[df['eq_lows']]
-    for idx in eq_lows_idx:
-        pos = df.index.get_loc(idx)
-        if pos >= 2:
-            x0 = df.index[pos-2]
-            x1 = df.index[pos-1]
-            y0 = df.loc[x0, 'Low']
-            y1 = df.loc[x1, 'Low']
-            fig.add_shape(type="line",
-                          x0=x0, x1=x1,
-                          y0=y0, y1=y1,
-                          line=dict(color='lime', width=2))
-
-    # equal highs lines connecting the two highs forming the pattern
-    eq_highs_idx = df.index[df['eq_highs']]
-    for idx in eq_highs_idx:
-        pos = df.index.get_loc(idx)
-        if pos >= 2:
-            x0 = df.index[pos-2]
-            x1 = df.index[pos-1]
-            y0 = df.loc[x0, 'High']
-            y1 = df.loc[x1, 'High']
-            fig.add_shape(type="line",
-                          x0=x0, x1=x1,
-                          y0=y0, y1=y1,
-                          line=dict(color='orange', width=2))
+    # plot equal highs horizontal lines
+    for start_idx, end_idx, level in eq_highs_levels:
+        x0 = df.index[start_idx]
+        x1 = df.index[end_idx]
+        fig.add_shape(type='line',
+                      x0=x0, x1=x1,
+                      y0=level, y1=level,
+                      line=dict(color='orange', width=2))
 
     fig.update_layout(
-        template='plotly_dark',
-        title=f'{ticker} ICT Setups',
-        xaxis_rangeslider_visible=True,
-        xaxis_title='Date',
-        yaxis_title='Price',
-        height=700,
-        margin=dict(l=40, r=40, t=60, b=40),
-        hovermode='x unified',
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
+        title=f"{ticker} price with ICT equal highs/lows",
