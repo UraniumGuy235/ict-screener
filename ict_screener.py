@@ -3,16 +3,26 @@ import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
+import random
 
 st.set_page_config(layout="wide")
 st.title("ict bullish stock screener + single ticker viewer")
 
 TIMEFRAMES = {
-    "6M": ("1mo", 3),  # only 6M for screener now
+    "6M": ("1mo", 3),
     "1W": ("1wk", 2),
     "1D": ("1d", 1),
     "1H": ("60m", 0.5),
 }
+
+# example universe (replace with larger universe or user input as needed)
+UNIVERSE = [
+    "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "META", "NVDA", "BRK-B",
+    "JPM", "JNJ", "V", "PG", "DIS", "NFLX", "ADBE", "PYPL", "CSCO",
+    "INTC", "CMCSA", "PEP", "KO", "XOM", "BA", "CRM", "ABT", "NKE",
+    "WMT", "T", "CVX", "MCD", "COST", "ACN", "IBM", "TXN", "QCOM",
+    "ORCL", "MDT", "AMGN", "HON", "UPS", "UNH", "LOW", "CAT", "AXP"
+]
 
 def fetch_data(ticker, interval):
     try:
@@ -29,31 +39,23 @@ def fetch_data(ticker, interval):
         return None
 
 def find_fvg(df):
-    """
-    Find Fair Value Gaps (FVG) on dataframe
-    Returns list of tuples (start_idx, end_idx, low, high)
-    Ported simplified logic from pine script: looks for gaps between candle1 and candle3
-    where middle candle volatility > threshold
-    """
     fvg_list = []
-    atr = df['High'] - df['Low']  # rough ATR proxy (simplified)
+    atr = df['High'] - df['Low']
     atr_ma = atr.rolling(28).mean()
     atr_mult = 1.5
 
     for i in range(3, len(df)):
+        if i >= len(atr_ma) or pd.isna(atr_ma.iloc[i-2]):
+            continue
         price_diff = df['High'].iloc[i-2] - df['Low'].iloc[i-2]
         middle_candle_vol = price_diff
-        if atr_ma.iloc[i-2] is None or np.isnan(atr_ma.iloc[i-2]):
-            continue
         if middle_candle_vol <= atr_ma.iloc[i-2] * atr_mult:
             continue
 
-        # bear condition FVG (gap down)
         bear_cond = (df['Close'].iloc[i-3] <= df['High'].iloc[i-2] and
                      df['Close'].iloc[i-1] <= df['Close'].iloc[i-2] and
                      df['High'].iloc[i] < df['Low'].iloc[i-2])
 
-        # bull condition FVG (gap up)
         bull_cond = (df['Close'].iloc[i-3] >= df['Low'].iloc[i-2] and
                      df['Close'].iloc[i-1] >= df['Close'].iloc[i-2] and
                      df['Low'].iloc[i] > df['High'].iloc[i-2])
@@ -62,16 +64,11 @@ def find_fvg(df):
             is_up_candle = df['Open'].iloc[i-1] <= df['Close'].iloc[i-1]
             top = df['Low'].iloc[i-2] if is_up_candle else df['Low'].iloc[i]
             bottom = df['High'].iloc[i] if is_up_candle else df['High'].iloc[i-2]
-            # store as (start idx, end idx, low, high) for FVG box
-            fvg_list.append((i-2, i, bottom, top))  # invert low/high for plotting consistency
+            fvg_list.append((i-2, i, bottom, top))
 
     return fvg_list
 
 def price_in_fvg(price, fvg):
-    """
-    check if price is inside a fvg range (low < price < high)
-    fvg tuple: (start_idx, end_idx, low, high)
-    """
     _, _, low, high = fvg
     return low < price < high
 
@@ -95,7 +92,7 @@ def plot_candles_with_fvg(df, fvg_list=None, title=""):
                 x0=start, x1=end,
                 y0=low, y1=high,
                 xref='x', yref='y',
-                fillcolor='rgba(255, 165, 0, 0.3)',  # orange transparent
+                fillcolor='rgba(255, 165, 0, 0.3)',
                 line=dict(color='rgba(255,165,0,0.8)', width=2, dash='dash')
             )
 
@@ -110,33 +107,53 @@ def plot_candles_with_fvg(df, fvg_list=None, title=""):
 mode = st.radio("select mode", ("screener", "single ticker"))
 
 if mode == "screener":
-    tickers_input = st.text_input("enter tickers (comma separated)", "AAPL,MSFT,GOOGL")
-    tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+    batch_size = 10
+    found_stocks = []
 
-    bullish_stocks = []
-    for ticker in tickers:
-        interval, score = TIMEFRAMES["6M"]
-        df = fetch_data(ticker, interval)
-        if df is None or df.empty:
-            continue
-        last_close = df['Close'].iloc[-1]
-        fvg_list = find_fvg(df)
-        # check if price has entered any FVG below current price
-        fvg_below = [fvg for fvg in fvg_list if price_in_fvg(last_close, fvg) and fvg[3] < last_close]
-        if fvg_below:
-            bullish_stocks.append({
-                'ticker': ticker,
-                'score': score,
-                'df': df,
-                'fvg': fvg_below
-            })
-
-    st.subheader("top stocks with price inside 6M FVG below close")
-    if not bullish_stocks:
-        st.info("no stocks found with price inside a 6M FVG below current price")
+    tickers_input = st.text_input("enter tickers to screen (comma separated, leave blank to use universe)", "")
+    if tickers_input.strip():
+        universe = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
     else:
-        cols = st.columns(min(3, len(bullish_stocks)))
-        for i, stock in enumerate(bullish_stocks[:3]):
+        universe = UNIVERSE.copy()
+
+    # session state for pagination
+    if 'index' not in st.session_state:
+        st.session_state.index = 0
+    if 'found_stocks' not in st.session_state:
+        st.session_state.found_stocks = []
+
+    def screen_batch():
+        idx = st.session_state.index
+        batch = universe[idx:idx+batch_size]
+        new_found = []
+        interval, _ = TIMEFRAMES["6M"]
+        for ticker in batch:
+            df = fetch_data(ticker, interval)
+            if df is None or df.empty:
+                continue
+            last_close = df['Close'].iloc[-1]
+            fvg_list = find_fvg(df)
+            fvg_below = [fvg for fvg in fvg_list if price_in_fvg(last_close, fvg) and fvg[3] < last_close]
+            if fvg_below:
+                new_found.append({'ticker': ticker, 'df': df, 'fvg': fvg_below})
+        st.session_state.found_stocks.extend(new_found)
+        st.session_state.index += batch_size
+
+    if st.button("search next batch"):
+        screen_batch()
+
+    # initial search if nothing found yet
+    if not st.session_state.found_stocks and st.session_state.index == 0:
+        screen_batch()
+
+    found_stocks = st.session_state.found_stocks
+
+    st.subheader("stocks with price inside 6M FVG below current price")
+    if not found_stocks:
+        st.info("no stocks found yet, press 'search next batch' to scan more")
+    else:
+        cols = st.columns(min(3, len(found_stocks)))
+        for i, stock in enumerate(found_stocks[:3]):
             plot_candles_with_fvg(
                 stock['df'],
                 fvg_list=stock['fvg'],
