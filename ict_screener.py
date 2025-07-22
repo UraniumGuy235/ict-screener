@@ -15,22 +15,17 @@ def detect_fvg(df):
     df['bullish_fvg'] = df['Low'].shift(1) > df['High'].shift(2)
     return df
 
-def find_equal_lows(df, tol=0.005):
-    # lows equal within 0.5% tolerance
+def find_equal_lows(df, tol=0.01):  # 1% tolerance
     lows = df['Low'].rolling(3).apply(
         lambda x: abs(x[0] - x[1]) / x[1] < tol and abs(x[1] - x[2]) / x[1] < tol,
         raw=True)
     return lows.fillna(0).astype(bool)
 
-def find_equal_highs(df, tol=0.005):
+def find_equal_highs(df, tol=0.01):  # 1% tolerance
     highs = df['High'].rolling(3).apply(
         lambda x: abs(x[0] - x[1]) / x[1] < tol and abs(x[1] - x[2]) / x[1] < tol,
         raw=True)
     return highs.fillna(0).astype(bool)
-
-def open_confluence(df):
-    # open within 0.1 of rolling mean of last 3 bars' opens
-    return df['Open'].rolling(3).apply(lambda x: abs(x[0] - x.mean()) < 0.1, raw=True).fillna(0).astype(bool)
 
 if st.button("Fetch and Plot"):
     df = yf.download(ticker, period=period, interval=interval)
@@ -43,7 +38,6 @@ if st.button("Fetch and Plot"):
     df = detect_fvg(df)
     df['eq_lows'] = find_equal_lows(df)
     df['eq_highs'] = find_equal_highs(df)
-    df['open_confluence'] = open_confluence(df)
 
     fig = go.Figure(data=[go.Candlestick(
         x=df.index,
@@ -99,16 +93,6 @@ if st.button("Fetch and Plot"):
                           x0=x0, x1=x1,
                           y0=y0, y1=y1,
                           line=dict(color='orange', width=2))
-
-    # open confluence blue markers
-    confluence_idx = df.index[df['open_confluence']]
-    fig.add_trace(go.Scatter(
-        x=confluence_idx,
-        y=df.loc[confluence_idx, 'Open'],
-        mode='markers',
-        marker=dict(color='blue', size=8, symbol='circle'),
-        name='Open Confluence'
-    ))
 
     fig.update_layout(
         template='plotly_dark',
