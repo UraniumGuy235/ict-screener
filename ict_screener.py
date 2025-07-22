@@ -10,17 +10,25 @@ TIMEFRAMES = {
     "6M": ("1mo", 3),
 }
 
-UNIVERSE = [
-    "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "BRK-B", "JPM", "V",  # sample top 10
-    # add more tickers up to 100 or more here
-    "JNJ", "WMT", "PG", "MA", "DIS", "HD", "BAC", "XOM", "PFE", "CSCO",
-    "NFLX", "ADBE", "CMCSA", "KO", "PEP", "T", "INTC", "VZ", "MRK", "CRM",
-    "ABT", "CVX", "ABBV", "NKE", "ORCL", "QCOM", "COST", "ACN", "MCD", "TXN",
-    "MDT", "NEE", "LIN", "PM", "LOW", "IBM", "HON", "BA", "SBUX", "AMGN",
-    "CAT", "MMM", "GE", "F", "GM", "UPS", "RTX", "AXP", "BLK", "GS",
-    "BKNG", "SPGI", "NOW", "LMT", "TMO", "ZTS", "CVS", "EL", "GILD", "SCHW",
-    "MO", "DE", "DUK", "SO", "CCI", "ITW", "CL", "BDX", "ICE", "USB",
-    "CSX", "FDX", "PNC", "NSC", "MET", "AON", "APD", "GM", "ADP", "TJX"
+SP500_TICKERS = [
+    "AAPL", "MSFT", "AMZN", "GOOGL", "FB", "TSLA", "BRK-B", "JPM", "JNJ", "V",
+    "WMT", "PG", "MA", "NVDA", "DIS", "HD", "BAC", "XOM", "PFE", "ADBE",
+    "CMCSA", "NFLX", "T", "KO", "INTC", "CSCO", "MRK", "PEP", "ABT", "CVX",
+    "CRM", "NKE", "ORCL", "ACN", "MDT", "AVGO", "MCD", "COST", "TXN", "QCOM",
+    "DHR", "NEE", "LLY", "UNP", "LIN", "BMY", "LOW", "IBM", "PM", "AMGN",
+    "SBUX", "HON", "CAT", "MMM", "GS", "GE", "NOW", "LMT", "BLK", "BKNG",
+    "ADI", "ZTS", "CB", "FIS", "SYK", "CL", "ISRG", "PLD", "ANTM", "TMO",
+    "SPGI", "MO", "CSX", "USB", "MDLZ", "CI", "CCI", "PNC", "ADP", "INTU",
+    "MMC", "SCHW", "GILD", "APD", "VRTX", "EMR", "DUK", "ICE", "BDX",
+    "MCO", "SO", "SHW", "CME", "COP", "ATVI", "ECL", "EW", "MET", "PGR",
+    "HUM", "PSA", "DG", "TJX", "C", "F", "DLR", "AEP", "ETN", "KMB",
+    "LRCX", "ROST", "AIG", "WBA", "EXC", "EL", "KR", "OXY", "ALL", "BSX",
+    "VLO", "ORLY", "DLTR", "KLAC", "DD", "ITW", "MCK", "HCA", "CMG", "FCX",
+    "SNPS", "REGN", "NOC", "WM", "ADM", "XEL", "KMI", "BIIB", "PEG", "D",
+    "CTSH", "WFC", "BAX", "COF", "CTAS", "EBAY", "STZ", "VTR", "ESS", "A",
+    "DOW", "GLW", "TRV", "FTNT", "TSN", "MS", "ZBH", "MNST", "KEY", "MPC",
+    "HES", "CNC", "PAYX", "TEL", "EXPE", "ANSS", "ILMN", "AKAM", "CTRA",
+    # you can add remaining tickers as needed
 ]
 
 def fetch_data(ticker, interval):
@@ -51,7 +59,6 @@ def find_fvg(df):
     return fvg_list
 
 def price_in_fvg(price, fvg):
-    # fvg = (start_idx, end_idx, lower_bound, upper_bound)
     lower, upper = fvg[2], fvg[3]
     return lower < price < upper if lower < upper else upper < price < lower
 
@@ -95,8 +102,8 @@ if "hits" not in st.session_state:
 batch_size = 10
 interval, _ = TIMEFRAMES["6M"]
 
-while st.session_state.scan_index < len(UNIVERSE) and not st.session_state.hits:
-    batch = UNIVERSE[st.session_state.scan_index:st.session_state.scan_index + batch_size]
+while st.session_state.scan_index < len(SP500_TICKERS) and not st.session_state.hits:
+    batch = SP500_TICKERS[st.session_state.scan_index:st.session_state.scan_index + batch_size]
     st.session_state.scan_index += batch_size
     for ticker in batch:
         st.write(f"scanning {ticker}...")
@@ -105,7 +112,6 @@ while st.session_state.scan_index < len(UNIVERSE) and not st.session_state.hits:
             continue
         last_close = df['Close'].iloc[-1]
         fvg_list = find_fvg(df)
-        # look for fvg below price that contains price (price inside gap)
         fvg_below = [fvg for fvg in fvg_list if price_in_fvg(last_close, fvg) and max(fvg[2], fvg[3]) < last_close]
         if fvg_below:
             st.session_state.hits.append({'ticker': ticker, 'df': df, 'fvg': fvg_below})
