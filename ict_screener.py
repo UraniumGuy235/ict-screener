@@ -94,8 +94,8 @@ for idx, ticker in enumerate(tickers):
             st.warning(f"no data for {ticker}")
         continue
 
-    eq_lows_levels = find_equal_levels(df, price_col='Low', tol=0.02)
-    eq_highs_levels = find_equal_levels(df, price_col='High', tol=0.02)
+    eq_lows_levels = find_equal_levels(df, price_col='Low', tol=0.005)
+    eq_highs_levels = find_equal_levels(df, price_col='High', tol=0.005)
 
     # x axis as category to skip non trading days
     x_vals = df['Date'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist()
