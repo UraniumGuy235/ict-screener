@@ -88,4 +88,4 @@ else:
         st.success(f"{ticker} current price IS inside {len(inside_fvg)} yearly FVG(s)")
     else:
         st.info(f"{ticker} current price NOT inside any yearly FVG")
-    plot_candles_with_fvg(df, inside_fvg, title=f"{ticker} yearly chart with price i
+    plot_candles_with_fvg(df, inside_fvg, title=f"{ticker} yearly chart with price inside FVG zones")
