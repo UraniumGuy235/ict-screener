@@ -1,7 +1,6 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
 import plotly.graph_objects as go
 
 st.set_page_config(layout="wide")
@@ -11,7 +10,7 @@ TIMEFRAMES = {
     "1M": ("1mo", 3),
     "1W": ("1wk", 2),
     "1D": ("1d", 1),
-    "1H": ("60m", 0.5),
+    "1H": ("60m", 0.5),  # lower priority
 }
 
 def fetch_data(ticker, interval):
@@ -23,40 +22,41 @@ def fetch_data(ticker, interval):
             df.columns = df.columns.droplevel(1)
         df = df[['Open', 'High', 'Low', 'Close', 'Volume']].astype(float)
         df.reset_index(inplace=True)
+        df.rename(columns={df.columns[0]: 'Date'}, inplace=True)  # patch: ensure 'Date' column exists
         return df
     except Exception:
         return None
 
-def find_equals(df, tolerance=0.01):
-    highs = df['High'].values
-    lows = df['Low'].values
-    equals = []
+def find_equal_levels(df, price_col='Low', tol=0.02):
+    levels = []
     n = len(df)
     for i in range(n):
-        hi1 = highs[i]
-        lo1 = lows[i]
+        base_price = df.loc[i, price_col]
         for j in range(i+1, n):
-            hi2 = highs[j]
-            lo2 = lows[j]
-
-            if j - i > 1:
-                inter_highs = highs[i+1:j]
-                inter_lows = lows[i+1:j]
-                max_high = np.max(inter_highs)
-                min_low = np.min(inter_lows)
+            test_price = df.loc[j, price_col]
+            if abs(test_price - base_price) / base_price <= tol:
+                inter_slice = df.loc[i+1:j-1] if j - i > 1 else pd.DataFrame()
+                if price_col == 'Low':
+                    if not inter_slice.empty and (inter_slice['Low'] < min(base_price, test_price)).any():
+                        continue
+                else:
+                    if not inter_slice.empty and (inter_slice['High'] > max(base_price, test_price)).any():
+                        continue
+                levels.append((i, j, (base_price + test_price)/2))
             else:
-                max_high = -np.inf
-                min_low = np.inf
+                if price_col == 'Low' and test_price > base_price * (1 + tol):
+                    break
+                if price_col == 'High' and test_price < base_price * (1 - tol):
+                    break
+    unique_levels = []
+    seen = set()
+    for s, e, lvl in levels:
+        if (s, e) not in seen and (e, s) not in seen:
+            unique_levels.append((s, e, lvl))
+            seen.add((s, e))
+    return unique_levels
 
-            # equals high check: difference within tolerance and no higher high between candles
-            if abs(hi1 - hi2) <= tolerance and max_high < min(hi1, hi2):
-                equals.append(('high', i, j, (hi1 + hi2) / 2))
-            # equals low check: difference within tolerance and no lower low between candles
-            elif abs(lo1 - lo2) <= tolerance and min_low > max(lo1, lo2):
-                equals.append(('low', i, j, (lo1 + lo2) / 2))
-    return equals
-
-def plot_candles_with_equals(df, equals=None, title=""):
+def plot_candles_with_equals(df, equals_highs=None, equals_lows=None, title=""):
     x_vals = df['Date'].dt.strftime('%Y-%m-%d').tolist()
     fig = go.Figure(data=[go.Candlestick(
         x=x_vals,
@@ -69,17 +69,26 @@ def plot_candles_with_equals(df, equals=None, title=""):
         name='price'
     )])
 
-    if equals:
-        for eq_type, start, end, level in equals:
-            color = 'orange' if eq_type == 'high' else 'cyan'
+    if equals_highs:
+        for s, e, lvl in equals_highs:
             fig.add_shape(
                 type='line',
-                x0=start, x1=end,
-                y0=level, y1=level,
+                x0=s, x1=e,
+                y0=lvl, y1=lvl,
                 xref='x', yref='y',
-                line=dict(color=color, width=3, dash='solid'),
+                line=dict(color='orange', width=3, dash='solid'),
+                name='equals high'
             )
-
+    if equals_lows:
+        for s, e, lvl in equals_lows:
+            fig.add_shape(
+                type='line',
+                x0=s, x1=e,
+                y0=lvl, y1=lvl,
+                xref='x', yref='y',
+                line=dict(color='cyan', width=3, dash='solid'),
+                name='equals low'
+            )
     fig.update_layout(
         title=title,
         template="plotly_dark",
@@ -106,15 +115,15 @@ if mode == "screener":
             if df is None or df.empty:
                 continue
             last_close = df['Close'].iloc[-1]
-            equals = find_equals(df, tolerance=0.01)
-            highs_eq = [e for e in equals if e[0] == 'high' and e[3] > last_close]
-            if highs_eq:
-                closest_level = min(highs_eq, key=lambda x: x[3])
-                gap = closest_level[3] - last_close
+            highs_eq = find_equal_levels(df, 'High', tol=0.02)
+            bullish_eq = [(s, e, lvl) for (s, e, lvl) in highs_eq if lvl > last_close]
+            if bullish_eq:
+                closest_level = min(bullish_eq, key=lambda x: x[2])
+                gap = closest_level[2] - last_close
                 if score > best_score or (score == best_score and (best_gap is None or gap < best_gap)):
                     best_score = score
                     best_gap = gap
-                    best_setup = highs_eq
+                    best_setup = bullish_eq
                     best_df = df
                     best_tf = tf_label
         if best_setup:
@@ -134,12 +143,11 @@ if mode == "screener":
     else:
         cols = st.columns(min(3, len(bullish_stocks)))
         for i, stock in enumerate(bullish_stocks[:3]):
-            with cols[i]:
-                plot_candles_with_equals(
-                    stock['df'],
-                    equals=stock['setup'],
-                    title=f"{stock['ticker']} bullish equals above price ({stock['tf']} timeframe)"
-                )
+            plot_candles_with_equals(
+                stock['df'],
+                equals_highs=stock['setup'],
+                title=f"{stock['ticker']} bullish equals above price ({stock['tf']} timeframe)"
+            )
 elif mode == "single ticker":
     ticker = st.text_input("enter ticker symbol", "AAPL").upper()
     tf_selected = st.multiselect("select timeframe(s)", options=list(TIMEFRAMES.keys()), default=["1D", "1W"])
@@ -151,5 +159,6 @@ elif mode == "single ticker":
             if df is None or df.empty:
                 st.warning(f"no data for {ticker} on {tf_label}")
                 continue
-            equals = find_equals(df, tolerance=0.01)
-            plot_candles_with_equals(df, equals=equals, title=f"{ticker} {tf_label} chart with equals")
+            highs_eq = find_equal_levels(df, 'High', tol=0.02)
+            lows_eq = find_equal_levels(df, 'Low', tol=0.02)
+            plot_candles_with_equals(df, equals_highs=highs_eq, equals_lows=lows_eq, title=f"{ticker} {tf_label} chart with equals")
